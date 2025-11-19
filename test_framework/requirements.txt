@@ -1,0 +1,10 @@
+# Test Framework Dependencies
+
+# Excel generation
+openpyxl>=3.0.0
+
+# Optional: Lua integration (if available)
+# lupa>=1.13
+
+# Standard library (included with Python)
+# json, csv, datetime, pathlib, subprocess
