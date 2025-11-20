@@ -33,10 +33,11 @@ local ah_dp_table1 = variable[42]
 
 local relay_warm = sbus[60]         --fűtés kapcsoló relé
 local relay_add_air_max= sbus[61]  -- tél/nyár váltó relé
-local relay_reventon = sbus[62]    -- főmotor beáll-user	
+local relay_reventon = sbus[62]    -- főmotor beáll-user
 local relay_add_air_save = sbus[63] -- befujt plusz levegő
 local relay_bypass_open = sbus[64]    --pára mentő relé (bypass nyit)
 local relay_main_fan = sbus[65]    -- fömotor    1-2 fokozat
+local relay_humidifier = sbus[66]  -- párásító relé
 
 local relay_cool=sbus[52]  -- hűtés kapcsoló relé
 local relay_sleep= sbus[53] -- pihenőidő relé
@@ -338,7 +339,8 @@ function CustomDevice:controlling()
   local	hutes_tiltas = false
   local	futes_tiltas = false
   local	befujt_para_hutes = false
-  local warm_dis = signal.warm_dis 
+  local kamra_humidification = false
+  local warm_dis = signal.warm_dis
   local dehumi = signal.dehumi
   local cool = signal.cool
   local warm = signal.warm
@@ -503,7 +505,34 @@ function CustomDevice:controlling()
   signal.bypass_open = signal.humi_save or (cool and not dehumi)
   signal.main_fan = signal.sum_wint_jel
 
-  --relék állapotának aktualizálása ( warm, cool)
+  -- HUMIDIFICATION CONTROL LOGIC
+  -- Independent of summer/winter mode (sum_wint_jel)
+  -- Start: when current RH projected to target temp is 5% below target
+  -- Stop: when current absolute humidity exceeds target absolute humidity
+  if not kamra_hibaflag then
+    -- Calculate absolute humidities
+    local chamber_ah = calculate_absolute_humidity(kamra_homerseklet / 10, kamra_para / 10)
+    local target_ah = calculate_absolute_humidity(kamra_cel_homerseklet / 10, kamra_cel_para / 10)
+
+    -- Project current AH to what RH would be at target temperature
+    local projected_rh_at_target = calculate_rh(kamra_cel_homerseklet / 10, chamber_ah)
+
+    -- Start humidification if projected RH is 5% below target
+    if projected_rh_at_target < (kamra_cel_para / 10 - 5.0) then
+      kamra_humidification = true
+    end
+
+    -- Stop humidification if current absolute humidity equals or exceeds target
+    if chamber_ah >= target_ah then
+      kamra_humidification = false
+    end
+  else
+    kamra_humidification = false
+  end
+
+  signal.humidification = kamra_humidification
+
+  --relék állapotának aktualizálása ( warm, cool, humidifier)
   setrelay(warm, relay_warm)
   setrelay(cool_rel, relay_cool)
   setrelay(signal.add_air_max, relay_add_air_max)
@@ -511,6 +540,7 @@ function CustomDevice:controlling()
   setrelay(signal.add_air_save, relay_add_air_save)
   setrelay(signal.bypass_open, relay_bypass_open)
   setrelay(signal.main_fan, relay_main_fan)
+  setrelay(signal.humidification, relay_humidifier)
 
   -- widget kimenetek aktualizálása
   local output_text = " "
@@ -523,6 +553,8 @@ function CustomDevice:controlling()
   if dehumi then output_text ="Páramentesítés!" else output_text = " " end
   if cool_dis then output_text ="Hűtés Tiltva!" end
   self:getElement('text_input_3_cdis'):setValue("value",  output_text,true)
+  if signal.humidification then output_text ="Párásítás Aktív!" else output_text = " " end
+  self:getElement('text_input_4_humidifier'):setValue("value",  output_text,true)
   
   --jelzések és flag-ek - CRITICAL: Store old values to detect changes
   local old_signal = signals1:getValue({})
@@ -544,7 +576,8 @@ function CustomDevice:controlling()
     old_signal.reventon ~= signal.reventon or
     old_signal.add_air_save ~= signal.add_air_save or
     old_signal.bypass_open ~= signal.bypass_open or
-    old_signal.main_fan ~= signal.main_fan
+    old_signal.main_fan ~= signal.main_fan or
+    old_signal.humidification ~= signal.humidification
   )
   
   signals1:setValue(signal, not signal_changed)  -- Propagate only if changed
