@@ -373,10 +373,7 @@ end
                 var_id = 3  # befujt_cel_homerseklet_v1
                 old_value = env.variables[var_id].getValue()
                 new_value = old_value + delta
-
-                # Determine if should propagate based on threshold
                 should_propagate = delta >= 2  # TEMP_CHANGE_THRESHOLD
-
                 env.variables[var_id].setValue(new_value, not should_propagate)
 
             elif 'humi_delta' in scenario.inputs:
@@ -384,11 +381,59 @@ end
                 var_id = 4  # befujt_cel_para_v1
                 old_value = env.variables[var_id].getValue()
                 new_value = old_value + delta
-
-                # Determine if should propagate based on threshold
                 should_propagate = delta >= 3  # HUMI_CHANGE_THRESHOLD
-
                 env.variables[var_id].setValue(new_value, not should_propagate)
+
+            # Fixed: Add missing input handlers
+            elif 'kamra_cel_change' in scenario.inputs:
+                delta = scenario.inputs['kamra_cel_change']
+                var_id = 3  # kamra_cel_homerseklet
+                old_value = env.variables[var_id].getValue()
+                new_value = old_value + delta
+                should_propagate = delta >= 2  # TEMP_CHANGE_THRESHOLD
+                env.variables[var_id].setValue(new_value, not should_propagate)
+
+            elif 'kamra_cel_para_change' in scenario.inputs:
+                delta = scenario.inputs['kamra_cel_para_change']
+                var_id = 4  # kamra_cel_para
+                old_value = env.variables[var_id].getValue()
+                new_value = old_value + delta
+                should_propagate = delta >= 3  # HUMI_CHANGE_THRESHOLD
+                env.variables[var_id].setValue(new_value, not should_propagate)
+
+            elif 'user_setpoint_change' in scenario.inputs:
+                # User changes ALWAYS propagate (immediate response required)
+                delta = scenario.inputs['user_setpoint_change']
+                var_id = 3  # User temp setpoint
+                old_value = env.variables[var_id].getValue()
+                new_value = old_value + delta
+                env.variables[var_id].setValue(new_value, False)  # Always propagate
+
+            # Multi-round scenario support
+            elif 'control_cycles' in scenario.inputs:
+                cycles = scenario.inputs['control_cycles']
+                for cycle in cycles:
+                    self._execute_control_cycle(env, cycle)
+
+            # Relay control
+            elif 'relay_command' in scenario.inputs:
+                relay_id, state = scenario.inputs['relay_command']
+                if state == 'on':
+                    env.sbus[relay_id].call('turn_on')
+                else:
+                    env.sbus[relay_id].call('turn_off')
+
+            # Mode switching
+            elif 'mode_change' in scenario.inputs:
+                mode = scenario.inputs['mode_change']
+                if mode == 'sleep':
+                    new_value = scenario.inputs.get('new_value', True)
+                    if 34 not in env.variables:
+                        env.variables[34]._value = {}
+                    if not isinstance(env.variables[34]._value, dict):
+                        env.variables[34]._value = {}
+                    env.variables[34]._value['sleep'] = new_value
+                    env.variables[34].setValue(env.variables[34]._value, False)  # Propagate mode changes
 
             final_snapshot = env.get_state_snapshot()
 
@@ -435,6 +480,50 @@ end
             )
 
         return result
+
+    def _execute_control_cycle(self, env: MockTechSinumEnvironment, cycle: Dict):
+        """Execute a single control cycle with multiple operations"""
+        # Update sensor readings
+        if 'sensor_readings' in cycle:
+            readings = cycle['sensor_readings']
+            if 'temp' in readings:
+                env.variables[1].setValue(readings['temp'], True)  # Current temp
+            if 'humidity' in readings:
+                env.variables[2].setValue(readings['humidity'], True)  # Current humidity
+
+        # Update setpoints
+        if 'setpoints' in cycle:
+            setpoints = cycle['setpoints']
+            if 'temp' in setpoints:
+                old = env.variables[3].getValue()
+                new = setpoints['temp']
+                delta = abs(new - old)
+                should_propagate = delta >= 2
+                env.variables[3].setValue(new, not should_propagate)
+            if 'humidity' in setpoints:
+                old = env.variables[4].getValue()
+                new = setpoints['humidity']
+                delta = abs(new - old)
+                should_propagate = delta >= 3
+                env.variables[4].setValue(new, not should_propagate)
+
+        # Execute control logic (simplified)
+        if 'control_action' in cycle:
+            action = cycle['control_action']
+            if action == 'heat':
+                env.sbus[60].call('turn_on')   # Heating relay
+                env.sbus[52].call('turn_off')  # Cooling relay off
+            elif action == 'cool':
+                env.sbus[52].call('turn_on')   # Cooling relay
+                env.sbus[60].call('turn_off')  # Heating relay off
+            elif action == 'idle':
+                env.sbus[60].call('turn_off')
+                env.sbus[52].call('turn_off')
+
+        # Apply delays (simulated time progression)
+        if 'delay_ms' in cycle:
+            # In real test, this would advance simulation time
+            pass
 
     def _validate_output(self, expected: Dict, actual_snapshot: Dict, env: MockTechSinumEnvironment) -> bool:
         """Validate expected vs actual output"""

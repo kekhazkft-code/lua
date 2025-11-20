@@ -9,6 +9,7 @@ import argparse
 from pathlib import Path
 
 from scenario_generator import ScenarioGenerator
+from advanced_scenario_generator import AdvancedScenarioGenerator
 from test_runner import LuaTestRunner
 from report_generator import ReportGenerator
 
@@ -53,8 +54,19 @@ def main():
     # Step 1: Generate test scenarios
     print("\n[1/3] Generating test scenarios...")
     print("-" * 80)
-    generator = ScenarioGenerator()
-    scenarios = generator.generate_all_scenarios()
+
+    # Generate basic scenarios
+    print("Generating basic test scenarios...")
+    basic_gen = ScenarioGenerator()
+    basic_scenarios = basic_gen.generate_all_scenarios()
+
+    # Generate advanced scenarios
+    print("Generating advanced test scenarios...")
+    advanced_gen = AdvancedScenarioGenerator()
+    advanced_scenarios = advanced_gen.generate_all_scenarios()
+
+    # Combine all scenarios
+    scenarios = basic_scenarios + advanced_scenarios
 
     print(f"\n✓ Generated {len(scenarios)} test scenarios")
 
