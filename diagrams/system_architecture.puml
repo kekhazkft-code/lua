@@ -1,0 +1,114 @@
+@startuml System Architecture
+!theme plain
+skinparam backgroundColor #FEFEFE
+skinparam componentStyle rectangle
+
+title Climate Control System - Overall Architecture
+
+package "Main Control Module" <<Rectangle>> #LightBlue {
+    component "erlelo_1119.lua" as Main {
+        [CustomDevice Manager]
+        [Climate Controller]
+        [Relay Manager]
+        [Psychrometric Calculator]
+    }
+}
+
+package "Sensor Initialization Module" <<Rectangle>> #LightGreen {
+    component "erlelo_1119b.lua" as SensorInit {
+        [Sensor Validator]
+        [Weight Measurement]
+        [Device Configuration]
+        [Cycle Manager]
+    }
+}
+
+package "External Sensor Module" <<Rectangle>> #LightYellow {
+    component "erlelo_1119c.lua" as ExtSensor {
+        [Temperature Monitor]
+        [Statistics Collector]
+        [Moving Average Filter]
+        [Polling Manager]
+    }
+}
+
+package "Chamber Humidity Module" <<Rectangle>> #LightCoral {
+    component "erlelo_1119d.lua" as ChamberHum {
+        [Humidity Calculator]
+        [Dew Point Calculator]
+        [Simulated Values]
+        [Chamber Monitor]
+    }
+}
+
+package "Hardware Interface" <<Rectangle>> #LightGray {
+    database "Variables" as Vars {
+        (Temperature Vars)
+        (Humidity Vars)
+        (Target Vars)
+        (Measurement Tables)
+        (Error Counters)
+    }
+    
+    component "SBUS Relays" as Relays {
+        [Heating Relay (60)]
+        [Cooling Relay (52)]
+        [Humidifier (66)]
+        [Main Fan (65)]
+        [Bypass (64)]
+        [Air Management]
+    }
+    
+    component "Sensors" as Sensors {
+        [Chamber Temp]
+        [Chamber Humidity]
+        [Supply Air Temp]
+        [Supply Air Humidity]
+        [External Temp]
+        [External Humidity]
+        [Weight Sensors]
+    }
+}
+
+Main --> Vars : Read/Write
+Main --> Relays : Control
+SensorInit --> Vars : Initialize/Validate
+SensorInit --> Sensors : Read
+ExtSensor --> Vars : Monitor
+ExtSensor --> Sensors : Poll
+ChamberHum --> Vars : Calculate/Update
+
+Main ..> SensorInit : Uses Functions
+Main ..> ChamberHum : Uses Calculations
+ExtSensor ..> ChamberHum : Shares Algorithms
+
+note right of Main
+  **Primary Control Logic**
+  - Climate regulation
+  - Relay orchestration
+  - Psychrometric calculations
+  - Event handling
+end note
+
+note right of SensorInit
+  **Initialization & Validation**
+  - Sensor health checks
+  - Weight measurement
+  - Configuration setup
+end note
+
+note right of ExtSensor
+  **External Monitoring**
+  - Outdoor conditions
+  - Statistical analysis
+  - Data filtering
+end note
+
+note right of ChamberHum
+  **Humidity Management**
+  - Chamber calculations
+  - Dew point tracking
+  - Simulated values
+end note
+
+@enduml

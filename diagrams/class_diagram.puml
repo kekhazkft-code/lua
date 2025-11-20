@@ -1,0 +1,268 @@
+@startuml Class Diagram
+!theme plain
+
+title Climate Control System - Class Diagram
+
+package "Main Control Module (erlelo_1119.lua)" {
+    class CustomDevice {
+        - status: string
+        - txt: table
+        __Variables__
+        - kamra_homerseklet_v1: variable[1]
+        - kamra_para_v1: variable[2]
+        - kamra_cel_homerseklet_v1: variable[3]
+        - kamra_cel_para_v1: variable[4]
+        - befujt_cel_homerseklet_v1: variable[5]
+        - befujt_cel_para_v1: variable[6]
+        - kulso_homerseklet_v1: variable[7]
+        - kulso_para_v1: variable[8]
+        __Relays__
+        - relay_warm: sbus[60]
+        - relay_cool: sbus[52]
+        - relay_humidifier: sbus[66]
+        - relay_main_fan: sbus[65]
+        - relay_bypass_open: sbus[64]
+        - relay_add_air_max: sbus[61]
+        - relay_add_air_save: sbus[63]
+        - relay_reventon: sbus[62]
+        - relay_sleep: sbus[53]
+        __Methods__
+        + c(): component
+        + onInit(): void
+        + online(): void
+        + offline(): void
+        + onEvent(event: table): void
+        + poll(): void
+        + updateText(text_id, format, value): void
+    }
+    
+    class PsychrometricCalculator <<utility>> {
+        + saturation_vapor_pressure(temp_c: number): number
+        + calculate_absolute_humidity(temp_c, rh: number): number
+        + calculate_rh(temp_c, target_ah: number): number
+        + calculate_temp_from_ah_and_rh(target_ah, rh: number): number
+        + ah_dp_set(ah_tx, dp_tx, ah, dp): void
+        + ah_dp_cel_szamol(dp_cel_tx, ah_cel_tx): void
+        + ah_dp_befujt_szamol(dp_befujt_tx, ah_befujt_tx): void
+        + calc_dew_point(temp_c, rh: number): number
+    }
+    
+    class ClimateController <<utility>> {
+        + evaluate_outdoor_air_benefit(): boolean
+        + mozgoatlag(tablazat, akt_meres, atlag_ertek, mertdb, kiir_call): void
+        + setrelay(relay, state, text_element, on_text, off_text): void
+    }
+}
+
+package "Sensor Initialization Module (erlelo_1119b.lua)" {
+    class SensorInitDevice {
+        __Variables__
+        - humidity_save_inp: sbus[48]
+        - sum_wint_inp: sbus[50]
+        - suly_meres_input: sbus[44]
+        - suly_meres_input2: sbus[45]
+        __Methods__
+        + pihenoido(): void
+        + simul_off(virt_Id, simul_switch): void
+    }
+    
+    class DeviceValidator <<utility>> {
+        + devcheck(devname, devtxt): void
+        + devset(logname, relayname, txtaddr, outtxt1, outtxt0): void
+        + txtset(logname, txtaddr, outtxt1, outtxt0): void
+    }
+    
+    class WeightManager <<utility>> {
+        __Configuration__
+        - mert_db: integer = 20
+        - tara: integer = 30
+        - suly_szorzo: integer = 250
+        __Methods__
+        + suly_check(table, raw_suly): void
+        + suly_szamol(mert_sulyok_table, atlagsuly_mv, raw_suly, kiir_call): number
+    }
+}
+
+package "External Sensor Module (erlelo_1119c.lua)" {
+    class ExternalSensorDevice {
+        - txt: table
+        __Methods__
+        + c(): component
+        + onInit(): void
+        + online(): void
+        + offline(): void
+        + updateText(text_id, format, value): void
+        + poll(): void
+        + onEvent(event: table): void
+    }
+    
+    class StatisticsManager <<utility>> {
+        + statpush(value, stats): void
+    }
+    
+    class DataFilter <<utility>> {
+        + mozgoatlag(tablazat, akt_meres, atlag_ertek, mertdb, kiir_call, simulate): void
+    }
+}
+
+package "Chamber Humidity Module (erlelo_1119d.lua)" {
+    class ChamberHumidityDevice {
+        - txt: table
+        - kamra_switch: boolean
+        - befujt_flag: boolean
+        __Methods__
+        + c(): component
+        + onInit(): void
+        + online(): void
+        + offline(): void
+        + poll(): void
+        + onEvent(event: table): void
+    }
+    
+    class HumidityCalculator <<utility>> {
+        __Constants__
+        - A: number = 6.112
+        - B: number = 17.67
+        - C: number = 243.5
+        - MW_RATIO: number = 2.1674
+        - KELVIN_OFFSET: number = 273.15
+        __Methods__
+        + saturation_vapor_pressure(temp_c: number): number
+        + calculate_absolute_humidity(temp_c, rh: number): number
+        + calculate_rh(temp_c, target_ah: number): number
+        + calculate_temp_from_ah_and_rh(target_ah, rh: number): number
+        + calc_dew_point(temp_c, rh: number): number
+        + calc_ah_dp_to_values(ah, dp, elem_temp, elem_rh): void
+    }
+    
+    class SimulationEngine <<utility>> {
+        + szimulalt_hiba(): void
+        + szimulalt_kiir(): void
+    }
+}
+
+package "Shared Data Layer" {
+    class VariableStore <<database>> {
+        __Temperature & Humidity__
+        + variable[1]: chamber_temp (int*10)
+        + variable[2]: chamber_humidity (int*10)
+        + variable[3]: target_temp (int*10)
+        + variable[4]: target_humidity (int*10)
+        + variable[5]: supply_target_temp (int*10)
+        + variable[6]: supply_target_humidity (int*10)
+        + variable[7]: external_temp (int*10)
+        + variable[8]: external_humidity (int*10)
+        __Measurement Tables__
+        + variable[17]: supply_temp_table
+        + variable[18]: supply_humidity_table
+        + variable[19]: chamber_temp_table
+        + variable[20]: chamber_humidity_table
+        + variable[21]: external_temp_table
+        + variable[22]: external_humidity_table
+        __Calculated Values__
+        + variable[23]: supply_temp_actual (int*10)
+        + variable[24]: supply_humidity_actual (int*10)
+        + variable[26]: safety_temp_actual (int*10)
+        + variable[27]: safety_temp_table
+        + variable[28]: last_sent_table
+        + variable[42]: ah_dp_table
+        __Error Counters__
+        + variable[29]: supply_error_count (int)
+        + variable[30]: chamber_error_count (int)
+        + variable[31]: external_error_count (int)
+        + variable[32]: safety_error_count (int)
+        __System Variables__
+        + variable[33]: constants
+        + variable[34]: signals
+        + variable[38]: cycle_variables
+        __Weight Data__
+        + variable[39-45]: weight_measurements
+        __Methods__
+        + getValue(path): value
+        + setValue(value, trigger): void
+        + setValueByPath(path, value, trigger): void
+        + save(trigger): void
+    }
+    
+    class RelayController <<hardware>> {
+        __Relays__
+        + sbus[52]: relay_cool
+        + sbus[53]: relay_sleep
+        + sbus[60]: relay_warm
+        + sbus[61]: relay_add_air_max
+        + sbus[62]: relay_reventon
+        + sbus[63]: relay_add_air_save
+        + sbus[64]: relay_bypass_open
+        + sbus[65]: relay_main_fan
+        + sbus[66]: relay_humidifier
+        __Methods__
+        + call(command: string): void
+        + getValue(property: string): value
+    }
+    
+    class SensorInterface <<hardware>> {
+        + read_chamber_temp(): number
+        + read_chamber_humidity(): number
+        + read_supply_temp(): number
+        + read_supply_humidity(): number
+        + read_external_temp(): number
+        + read_external_humidity(): number
+        + read_weight(): number
+        + getValue(property: string): value
+    }
+}
+
+' Relationships - Main Control
+CustomDevice --> VariableStore : reads/writes
+CustomDevice --> RelayController : controls
+CustomDevice --> SensorInterface : reads
+CustomDevice ..> PsychrometricCalculator : uses
+CustomDevice ..> ClimateController : uses
+
+' Relationships - Sensor Init
+SensorInitDevice --> VariableStore : initializes/validates
+SensorInitDevice --> SensorInterface : configures
+SensorInitDevice ..> DeviceValidator : uses
+SensorInitDevice ..> WeightManager : uses
+
+' Relationships - External Sensor
+ExternalSensorDevice --> VariableStore : monitors
+ExternalSensorDevice --> SensorInterface : polls
+ExternalSensorDevice ..> StatisticsManager : uses
+ExternalSensorDevice ..> DataFilter : uses
+
+' Relationships - Chamber Humidity
+ChamberHumidityDevice --> VariableStore : calculates/updates
+ChamberHumidityDevice --> SensorInterface : reads
+ChamberHumidityDevice ..> HumidityCalculator : uses
+ChamberHumidityDevice ..> SimulationEngine : uses
+
+' Shared Algorithm Dependencies
+PsychrometricCalculator <.. HumidityCalculator : same algorithms
+ClimateController <.. DataFilter : same filtering
+
+note right of VariableStore
+  **Shared State Manager**
+  All modules read/write through
+  this centralized variable store.
+  Provides data persistence and
+  cross-module communication.
+end note
+
+note right of RelayController
+  **Hardware Abstraction**
+  SBUS protocol interface to
+  physical relays. Commands:
+  - turn_on()
+  - turn_off()
+end note
+
+note bottom of CustomDevice
+  **Primary Controller**
+  Orchestrates all climate control
+  operations. Implements main
+  control logic and coordinates
+  with other modules.
+end note
+
+@enduml
