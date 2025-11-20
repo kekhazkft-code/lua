@@ -1,0 +1,165 @@
+@startuml Data Flow Diagram
+!theme plain
+
+title Climate Control System - Data Flow Architecture
+
+rectangle "Sensors Layer" {
+    component [Chamber\nTemp Sensor] as CTS
+    component [Chamber\nHumidity Sensor] as CHS
+    component [Supply Air\nTemp Sensor] as SATS
+    component [Supply Air\nHumidity Sensor] as SAHS
+    component [External\nTemp Sensor] as ETS
+    component [External\nHumidity Sensor] as EHS
+    component [Weight\nSensors] as WS
+}
+
+rectangle "Data Acquisition & Filtering" {
+    component [Moving Average\nFilter (5-point)] as MAF
+    component [Error Detection\n& Validation] as EDV
+    component [Data Tables\n(History Buffer)] as DTB
+}
+
+rectangle "Calculation Layer" {
+    component [Psychrometric\nCalculations] as PSYCH
+    component [Dew Point\nCalculator] as DPC
+    component [Absolute Humidity\nCalculator] as AHC
+    component [Control Algorithm\nEvaluator] as CAE
+}
+
+rectangle "Shared Variable Store" {
+    database "Real-time Values" as RTV {
+        (chamber_temp: var[1])
+        (chamber_humidity: var[2])
+        (external_temp: var[7])
+        (external_humidity: var[8])
+        (supply_air_temp: var[23])
+        (supply_air_humidity: var[24])
+    }
+    
+    database "Target Values" as TV {
+        (target_temp: var[3])
+        (target_humidity: var[4])
+        (supply_target_temp: var[5])
+        (supply_target_humidity: var[6])
+    }
+    
+    database "Measurement Tables" as MT {
+        (chamber_temp_table: var[19])
+        (chamber_hum_table: var[20])
+        (external_temp_table: var[21])
+        (external_hum_table: var[22])
+        (supply_temp_table: var[17])
+        (supply_hum_table: var[18])
+    }
+    
+    database "Calculated Values" as CV {
+        (dew_point: var[42])
+        (absolute_humidity: var[42])
+        (error_counters: var[29-32])
+        (cycle_variables: var[38])
+    }
+    
+    database "Weight Data" as WD {
+        (weight_measurements: var[39-45])
+    }
+}
+
+rectangle "Control Logic Layer" {
+    component [Temperature\nController] as TC
+    component [Humidity\nController] as HC
+    component [Outdoor Air\nBenefit Evaluator] as OABE
+    component [Energy\nOptimizer] as EO
+}
+
+rectangle "Actuator Layer" {
+    component [Relay\nManager] as RM
+}
+
+rectangle "Hardware Outputs" {
+    component [Heating\nRelay (60)] as HR
+    component [Cooling\nRelay (52)] as CR
+    component [Humidifier\nRelay (66)] as HUR
+    component [Main Fan\nRelay (65)] as MFR
+    component [Bypass\nRelay (64)] as BR
+    component [Air Management\nRelays (61-63)] as AMR
+}
+
+' Sensor to Data Acquisition
+CTS --> MAF : Raw temp
+CHS --> MAF : Raw humidity
+SATS --> MAF : Raw supply temp
+SAHS --> MAF : Raw supply humidity
+ETS --> MAF : Raw external temp
+EHS --> MAF : Raw external humidity
+WS --> EDV : Raw weight
+
+' Data Acquisition to Storage
+MAF --> RTV : Filtered values
+MAF --> MT : Historical data
+EDV --> CV : Error status
+EDV --> RTV : Validated values
+
+' Storage to Calculations
+RTV --> PSYCH : Current values
+TV --> PSYCH : Target values
+RTV --> DPC : Temp & RH
+RTV --> AHC : Temp & RH
+MT --> CAE : Trends
+
+' Calculations to Storage
+PSYCH --> CV : Psychrometric\nproperties
+DPC --> CV : Dew point
+AHC --> CV : Abs. humidity
+
+' Storage to Control Logic
+RTV --> TC : Current temp
+RTV --> HC : Current humidity
+TV --> TC : Target temp
+TV --> HC : Target humidity
+CV --> OABE : Psychrometric\ndata
+RTV --> OABE : External conditions
+
+' Control Logic to Actuators
+TC --> RM : Heating/Cooling\ncommands
+HC --> RM : Humidity\ncommands
+OABE --> RM : Ventilation\nstrategy
+EO --> RM : Energy-saving\nmodes
+
+' Actuators to Hardware
+RM --> HR : ON/OFF
+RM --> CR : ON/OFF
+RM --> HUR : ON/OFF
+RM --> MFR : Speed control
+RM --> BR : Open/Close
+RM --> AMR : Mode selection
+
+note right of MAF
+  **Filtering Parameters:**
+  - Window size: 5 measurements
+  - Threshold: 0.2°C, 0.3% RH
+  - Min supply temp: 6.0°C
+end note
+
+note right of PSYCH
+  **Calculations:**
+  - Saturation vapor pressure
+  - Relative humidity conversion
+  - Absolute humidity
+  - Dew point temperature
+end note
+
+note right of CAE
+  **Control Algorithm:**
+  1. Compare current vs target
+  2. Evaluate outdoor air benefit
+  3. Calculate optimal strategy
+  4. Determine relay states
+end note
+
+note bottom of RTV
+  **Update Frequency:**
+  Every poll cycle
+  (~1-5 seconds typical)
+end note
+
+@enduml
