@@ -409,9 +409,81 @@ end
                 new_value = old_value + delta
                 env.variables[var_id].setValue(new_value, False)  # Always propagate
 
+            # Outdoor air benefit evaluation (NEW)
+            elif 'outdoor_air_eval' in scenario.inputs:
+                # Extract parameters from initial state
+                chamber_temp = env.variables[1].getValue() / 10.0  # kamra_homerseklet
+                chamber_rh = env.variables[2].getValue() / 10.0    # kamra_para
+                target_temp = env.variables[3].getValue() / 10.0   # kamra_cel_homerseklet
+                target_rh = env.variables[4].getValue() / 10.0     # kamra_cel_para
+                outdoor_temp = env.variables[5].getValue() / 10.0  # kulso_homerseklet
+                outdoor_rh = env.variables[6].getValue() / 10.0    # kulso_para
+                outdoor_mix_ratio = scenario.inputs.get('outdoor_mix_ratio', 0.30)
+
+                # Perform psychrometric evaluation
+                beneficial, details = self._evaluate_outdoor_air_benefit(
+                    chamber_temp, chamber_rh,
+                    target_temp, target_rh,
+                    outdoor_temp, outdoor_rh,
+                    outdoor_mix_ratio
+                )
+
+                # Store results in environment for validation
+                env._test_results = {
+                    'outdoor_air_beneficial': beneficial,
+                    'temp_improves': details['temp_improves'],
+                    'ah_improves': details['ah_improves'],
+                    'rh_acceptable': details['rh_acceptable'],
+                    'mixed_temp': details['mixed_temp'],
+                    'projected_rh_at_target': details['projected_rh_at_target']
+                }
+
+            # Controlling function integration test (NEW)
+            elif 'controlling_cycle' in scenario.inputs:
+                # Simulate the controlling() function logic
+                # Extract parameters
+                chamber_temp = env.variables[1].getValue() / 10.0
+                chamber_rh = env.variables[2].getValue() / 10.0
+                target_temp = env.variables[3].getValue() / 10.0
+                target_rh = env.variables[4].getValue() / 10.0
+                outdoor_temp = env.variables[5].getValue() / 10.0
+                outdoor_rh = env.variables[6].getValue() / 10.0
+
+                # Get mode settings
+                mode_var = env.variables[34].getValue()
+                humi_save = mode_var.get('humi_save', False) if isinstance(mode_var, dict) else False
+                sum_wint_jel = mode_var.get('sum_wint_jel', False) if isinstance(mode_var, dict) else False
+
+                # Evaluate outdoor air benefit if not in humi_save mode
+                outdoor_air_beneficial = False
+                if not humi_save:
+                    outdoor_air_beneficial, details = self._evaluate_outdoor_air_benefit(
+                        chamber_temp, chamber_rh,
+                        target_temp, target_rh,
+                        outdoor_temp, outdoor_rh,
+                        0.30  # 30% mixing ratio
+                    )
+
+                # Apply controlling logic: signal.add_air_max = beneficial AND (not sum_wint_jel)
+                signal_add_air_max = outdoor_air_beneficial and (not sum_wint_jel)
+
+                # Set relay state
+                if signal_add_air_max:
+                    env.sbus[61].call('turn_on')
+                else:
+                    env.sbus[61].call('turn_off')
+
+                # Store results for validation
+                env._test_results = {
+                    'outdoor_air_beneficial': outdoor_air_beneficial,
+                    'signal_add_air_max': signal_add_air_max,
+                    'relay_61_state': env.sbus[61].get_state()
+                }
+
             # Multi-round scenario support
             elif 'control_cycles' in scenario.inputs:
                 cycles = scenario.inputs['control_cycles']
+                env._test_results = {'cycles_with_outdoor_air': 0}
                 for cycle in cycles:
                     self._execute_control_cycle(env, cycle)
 
@@ -525,6 +597,115 @@ end
             # In real test, this would advance simulation time
             pass
 
+    def _calculate_absolute_humidity(self, temp_c: float, rh_percent: float) -> float:
+        """
+        Calculate absolute humidity (g/m³) from temperature and relative humidity
+        Uses Tetens formula for saturation vapor pressure
+        """
+        import math
+
+        # Tetens formula for saturation vapor pressure (hPa)
+        T = temp_c
+        e_s = 6.112 * math.exp((17.67 * T) / (T + 243.5))
+
+        # Actual vapor pressure
+        e = (rh_percent / 100.0) * e_s
+
+        # Absolute humidity (g/m³)
+        # Using ideal gas law: AH = (e * 1000 * M_w) / (R * T_k)
+        # where M_w = 18.015 g/mol, R = 8.314 J/(mol·K), T_k = T + 273.15
+        T_k = T + 273.15
+        ah = (e * 100 * 18.015) / (8.314 * T_k)  # e in Pa (×100), result in g/m³
+
+        return ah
+
+    def _calculate_rh(self, temp_c: float, ah_g_m3: float) -> float:
+        """
+        Calculate relative humidity (%) from temperature and absolute humidity
+        Inverse of _calculate_absolute_humidity
+        """
+        import math
+
+        # Tetens formula for saturation vapor pressure (hPa)
+        T = temp_c
+        e_s = 6.112 * math.exp((17.67 * T) / (T + 243.5))
+
+        # Calculate actual vapor pressure from absolute humidity
+        # AH = (e * 1000 * M_w) / (R * T_k)
+        # => e = (AH * R * T_k) / (1000 * M_w)
+        T_k = T + 273.15
+        e = (ah_g_m3 * 8.314 * T_k) / (100 * 18.015)  # Result in Pa, convert to hPa
+
+        # Relative humidity
+        rh = (e / e_s) * 100.0
+
+        # Clamp to valid range
+        return max(0.0, min(100.0, rh))
+
+    def _evaluate_outdoor_air_benefit(
+        self,
+        chamber_temp: float,
+        chamber_rh: float,
+        target_temp: float,
+        target_rh: float,
+        outdoor_temp: float,
+        outdoor_rh: float,
+        outdoor_mix_ratio: float
+    ) -> tuple:
+        """
+        Evaluate if outdoor air is beneficial using corrected psychrometric method
+        Returns (beneficial: bool, details: dict)
+        """
+        import math
+
+        # STEP 1: Calculate absolute humidities (temperature-independent metric)
+        chamber_ah = self._calculate_absolute_humidity(chamber_temp, chamber_rh)
+        target_ah = self._calculate_absolute_humidity(target_temp, target_rh)
+        outdoor_ah = self._calculate_absolute_humidity(outdoor_temp, outdoor_rh)
+
+        # STEP 2: Calculate mixed air properties (assuming perfect mixing)
+        mixed_temp = chamber_temp * (1 - outdoor_mix_ratio) + outdoor_temp * outdoor_mix_ratio
+        mixed_ah = chamber_ah * (1 - outdoor_mix_ratio) + outdoor_ah * outdoor_mix_ratio
+
+        # STEP 3: Project final steady-state at target temperature
+        projected_rh_at_target = self._calculate_rh(target_temp, mixed_ah)
+
+        # DECISION CRITERIA (corrected - comparing at same temperature):
+        # 1. Temperature benefit: Moving toward target?
+        temp_delta_current = abs(target_temp - chamber_temp)
+        temp_delta_mixed = abs(target_temp - mixed_temp)
+        temp_improves = temp_delta_mixed < temp_delta_current
+
+        # 2. Humidity evaluation at target temperature (NOT at mixed temperature!)
+        rh_tolerance = 5.0
+        rh_acceptable = abs(projected_rh_at_target - target_rh) <= rh_tolerance
+
+        # 3. Absolute humidity check
+        ah_delta_current = abs(target_ah - chamber_ah)
+        ah_delta_mixed = abs(target_ah - mixed_ah)
+        ah_improves = ah_delta_mixed < ah_delta_current  # Strict improvement, not just "not worse"
+
+        # CORRECTED DECISION LOGIC
+        beneficial = temp_improves and (ah_improves or rh_acceptable)
+
+        details = {
+            'temp_improves': temp_improves,
+            'ah_improves': ah_improves,
+            'rh_acceptable': rh_acceptable,
+            'chamber_ah': chamber_ah,
+            'target_ah': target_ah,
+            'outdoor_ah': outdoor_ah,
+            'mixed_temp': mixed_temp,
+            'mixed_ah': mixed_ah,
+            'projected_rh_at_target': projected_rh_at_target,
+            'temp_delta_current': temp_delta_current,
+            'temp_delta_mixed': temp_delta_mixed,
+            'ah_delta_current': ah_delta_current,
+            'ah_delta_mixed': ah_delta_mixed
+        }
+
+        return beneficial, details
+
     def _validate_output(self, expected: Dict, actual_snapshot: Dict, env: MockTechSinumEnvironment) -> bool:
         """Validate expected vs actual output"""
         try:
@@ -542,6 +723,43 @@ end
                 if expected['blocked']:
                     if total_blocked == 0:
                         return False
+
+            # NEW: Validate outdoor air benefit evaluation results
+            if 'outdoor_air_beneficial' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results['outdoor_air_beneficial'] != expected['outdoor_air_beneficial']:
+                    return False
+
+            if 'temp_improves' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results['temp_improves'] != expected['temp_improves']:
+                    return False
+
+            if 'ah_improves' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results['ah_improves'] != expected['ah_improves']:
+                    return False
+
+            if 'rh_acceptable' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results['rh_acceptable'] != expected['rh_acceptable']:
+                    return False
+
+            # NEW: Validate relay states
+            if 'relay_61_state' in expected:
+                actual_relay_state = actual_snapshot['relays'].get(61, 'off')
+                if actual_relay_state != expected['relay_61_state']:
+                    return False
+
+            if 'signal_add_air_max' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results.get('signal_add_air_max') != expected['signal_add_air_max']:
+                    return False
 
             # Add more validation logic as needed
 

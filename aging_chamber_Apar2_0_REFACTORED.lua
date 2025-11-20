@@ -259,7 +259,7 @@ local function evaluate_outdoor_air_benefit(
   -- 3. Absolute humidity check: Is mixed AH closer to target than current?
   local ah_delta_current = math.abs(target_ah - chamber_ah)
   local ah_delta_mixed = math.abs(target_ah - mixed_ah)
-  local ah_improves = ah_delta_mixed <= ah_delta_current
+  local ah_improves = ah_delta_mixed < ah_delta_current  -- Strict improvement, not just "not worse"
 
   -- CORRECTED DECISION LOGIC:
   -- Use outdoor air if temperature improves AND (humidity improves OR remains acceptable)
