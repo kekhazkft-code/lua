@@ -58,17 +58,26 @@ end
 function CustomDevice:onInit()
   print('init')
   self:setValue('status', 'unknown')
-  
+
   local com = self:c()
   self:getElement('baudrate'):setValue('value', tostring(com:getValue('baud_rate')), true)
   self:getElement('parity'):setValue('value', com:getValue('parity'), true)
   self:getElement('stopbits'):setValue('value', com:getValue('stop_bits'), true)
   self:getElement('slave_id'):setValue('value', tostring(com:getValue('slave_address')), true)
-  
+
   local xceiver = com:getValue('associations.transceiver')
   self:getElement('xceiver'):setValue('associations.selected', xceiver, true)
   befujt_hibaszam1:setValue(3,true)
- 
+
+  -- BUG FIX: Initialize sliders with current target values
+  local temp_target = kamra_cel_homerseklet_v1:getValue()
+  local humi_target = kamra_cel_para_v1:getValue()
+  self:getElement('slider_1'):setValue('value', temp_target/10, true)
+  self:getElement('slider_0'):setValue('value', humi_target/10, true)
+
+  -- Also initialize dew point/absolute humidity displays
+  ah_dp_cel_szamol(self:getElement("dp_cel_tx"), self:getElement("ah_cel_tx"))
+
 end
 
 function CustomDevice:online()
@@ -568,14 +577,18 @@ function CustomDevice:onEvent(event)
       self:getElement("ah_kamra_tx"):setValue("value", string.format("absolut pára:  %0.3fg/m3", ah_dp_table1:getValue().ah_kamra), true)
       print(event.type, source.id, source.type, det, "p2 - kamra values changed")
       
-    elseif source.id == 3 then  -- kamra_cel_homerseklet_v1 changed
-      local celh = self:getElement("slider_1"):getValue("value")
-      print("slider_1", celh)
-      kamra_cel_homerseklet_v1:setValue(celh*10, true)
-      local celp = self:getElement("slider_0"):getValue("value")
-      print("slider_0", celp)
-      kamra_cel_para_v1:setValue(celp*10, true)
-      print(event.type, source.id, source.type, det, "p3 - target setpoint changed")
+    elseif source.id == 3 or source.id == 4 then  -- kamra_cel_homerseklet_v1 or kamra_cel_para_v1 changed
+      -- BUG FIX: Update sliders to match the NEW variable values (not overwrite with old slider values)
+      local celh = kamra_cel_homerseklet_v1:getValue()
+      local celp = kamra_cel_para_v1:getValue()
+
+      self:getElement("slider_1"):setValue("value", celh/10, true)
+      self:getElement("slider_0"):setValue("value", celp/10, true)
+
+      -- Update dew point and absolute humidity displays
+      ah_dp_cel_szamol(self:getElement("dp_cel_tx"), self:getElement("ah_cel_tx"))
+
+      print(event.type, source.id, source.type, det, "p3 - target setpoint changed, sliders updated")
       
     elseif source.id == 7 or source.id == 8 or source.id == 21 or source.id == 22 then  -- kulso values
       self:getElement("_3_tx_kulso_homerseklet_"):setValue("value", string.format("%3.1f°C", kulso_homerseklet_v1:getValue()/10), true)
