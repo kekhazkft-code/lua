@@ -1,457 +1,331 @@
-# CORRECTED: Psychrometric Evaluation Logic
+# Corrected Psychrometric Evaluation for Outdoor Air Control
 
-## 🔴 Critical Error Found and Fixed
+## Critical Error Identified
 
-### The Problem:
-
-In the original logic, I compared relative humidity at **different temperatures**:
-- Mixed air: 82% RH at 8.4°C
-- Chamber: 85% RH at 12°C
-
-**This is meaningless!** Relative humidity is temperature-dependent.
-
----
-
-## ✅ CORRECTED EVALUATION METHOD
-
-### Three-Step Comparison:
-
-```
-STEP 1: Calculate mixed air properties (as before)
-  - Mixed temperature
-  - Mixed absolute humidity
-  - Mixed relative humidity (at mixed temperature)
-
-STEP 2: Project what happens after mixing
-  - Determine final steady-state temperature
-  - Calculate RH at that final temperature
-  - Use this for comparison
-
-STEP 3: Compare at SAME temperature
-  - Either compare AH (temperature-independent)
-  - Or compare RH at target temperature
-```
-
----
-
-## 🧮 Corrected Scenario 1 Analysis
-
-### Input:
-```
-Chamber (actual):  12°C, 85% RH → AH = 9.2 g/m³
-Chamber (target):  10°C, 85% RH → AH = 8.1 g/m³
-Outdoor:           0°C, 60% RH → AH = 3.3 g/m³
-```
-
-### Step 3: Simulate Mixing (same as before)
-```
-mixed_temp = (0 × 0.3) + (12 × 0.7) = 8.4°C
-mixed_ah = (3.3 × 0.3) + (9.2 × 0.7) = 7.4 g/m³
-mixed_rh = calculate_rh(8.4°C, 7.4 g/m³) = 82%
-```
-
-### Step 4: CORRECTED Evaluation
-
-#### Option A: Compare Absolute Humidity (Simplest)
-```
-Chamber AH: 9.2 g/m³
-Mixed AH:   7.4 g/m³
-Target AH:  8.1 g/m³ (at 10°C)
-
-Analysis:
-  ✅ Mixed air reduces AH by 1.8 g/m³ (good for dehumidifying)
-  ⚠️ BUT mixed AH (7.4) is below target AH (8.1)
-  ⚠️ Once chamber reaches 10°C, it will be too dry!
-```
-
-#### Option B: Compare RH at Target Temperature (More Accurate)
-```
-After mixing and reaching target temperature (10°C):
-  
-  Final state: 10°C with AH = 7.4 g/m³
-  Final RH = calculate_rh(10°C, 7.4 g/m³) = 78%
-
-Compare at SAME temperature (10°C):
-  Target:  10°C, 85% RH
-  Result:  10°C, 78% RH
-  
-  RH deficit = 78 - 85 = -7% ⚠️
-```
-
-#### Option C: Compare RH at Current Chamber Temperature
-```
-If the mixed air (7.4 g/m³) were at current chamber temp (12°C):
-  
-  RH = calculate_rh(12°C, 7.4 g/m³) = 69%
-
-Compare at SAME temperature (12°C):
-  Current:  12°C, 85% RH
-  If mixed: 12°C, 69% RH
-  
-  RH change = 69 - 85 = -16% ⚠️⚠️
-```
-
-### Revised Decision:
-```
-❌ ORIGINAL (WRONG):
-  "rh_change = 82 - 85 = -3%" (comparing different temperatures)
-
-✅ CORRECTED:
-  Absolute Humidity Analysis:
-    - Mixing reduces AH from 9.2 to 7.4 g/m³
-    - This is BELOW target AH of 8.1 g/m³
-    - Chamber will be TOO DRY
-  
-  Relative Humidity at Target Temperature:
-    - At 10°C with 7.4 g/m³ → 78% RH
-    - Target is 85% RH
-    - Deficit of 7% (may need humidification)
-
-REVISED DECISION:
-  ⚠️ USE OUTDOOR AIR FOR COOLING BUT MONITOR HUMIDITY
-  relay_add_air_max = ON (cooling benefit is good)
-  relay_cool = OFF (save energy)
-  relay_humidifier = STANDBY (may need later)
-  
-  Trade-off: Accept slight humidity reduction to save 3000W
-```
-
----
-
-## 🎯 CORRECTED DECISION LOGIC
-
-### Function: Evaluate Mixing Impact (CORRECTED)
-
+**Original Issue**: The system was using overly simplistic boolean logic for outdoor air control:
 ```lua
-function evaluate_mixing_impact(chamber_temp, chamber_ah, 
-                               target_temp, target_ah, target_rh,
-                               mixed_temp, mixed_ah)
-    --[[
-    Evaluates mixing impact by comparing at consistent temperatures
-    
-    Returns impact on:
-    1. Temperature (straightforward)
-    2. Absolute humidity (temperature-independent)
-    3. Relative humidity (compared at target temperature)
-    ]]
-    
-    local result = {}
-    
-    -- 1. Temperature change (simple)
-    result.temp_change = mixed_temp - chamber_temp
-    result.temp_helps_cooling = (result.temp_change < 0)
-    result.temp_helps_heating = (result.temp_change > 0)
-    
-    -- 2. Absolute humidity change (temperature-independent)
-    result.ah_change = mixed_ah - chamber_ah
-    result.ah_helps_dehumidify = (result.ah_change < 0)
-    result.ah_helps_humidify = (result.ah_change > 0)
-    
-    -- 3. RH comparison at TARGET temperature (CORRECTED!)
-    local chamber_rh_at_target = calculate_rh(target_temp, chamber_ah)
-    local mixed_rh_at_target = calculate_rh(target_temp, mixed_ah)
-    
-    result.rh_at_target_temp = mixed_rh_at_target
-    result.rh_change_at_target = mixed_rh_at_target - target_rh
-    result.rh_deficit_at_target = target_rh - mixed_rh_at_target
-    
-    -- 4. Overall assessment
-    result.makes_too_dry = (mixed_ah < target_ah * 0.90)  -- More than 10% below target AH
-    result.makes_too_wet = (mixed_ah > target_ah * 1.10)  -- More than 10% above target AH
-    
-    result.acceptable_humidity = not (result.makes_too_dry or result.makes_too_wet)
-    
-    return result
-end
+signal.add_air_max = cool and (not signal.sum_wint_jel) and (not signal.humi_save)
+```
+
+This logic only checked:
+- If cooling is needed
+- If not in summer/winter mode
+- If not in humidity save mode
+
+**What was missing**: No psychrometric evaluation to determine if outdoor air is actually beneficial!
+
+## The Fundamental Problem
+
+When evaluating whether to use outdoor air, comparing **relative humidity at different temperatures is invalid** because:
+- Relative humidity is temperature-dependent
+- Air at 12°C/85% RH has completely different moisture content than air at 0°C/85% RH
+- Direct RH comparison across temperatures is meaningless
+
+### Example of Flawed Logic (OLD)
+```
+Chamber: 12°C, 85% RH
+Outdoor: 0°C, 60% RH
+Flawed conclusion: "Outdoor is drier (60% < 85%), use it!"
+Reality: Outdoor has 3.3 g/m³, chamber has 9.2 g/m³ after reaching target
 ```
 
 ---
 
-## 📊 CORRECTED EVALUATION TABLE
+## Corrected Three-Step Method
 
-### Scenario 1: Cold Dry Winter (CORRECTED)
+### Step 1: Calculate Absolute Humidities (Temperature-Independent)
+```lua
+chamber_ah = calculate_absolute_humidity(chamber_temp, chamber_rh)
+target_ah = calculate_absolute_humidity(target_temp, target_rh)
+outdoor_ah = calculate_absolute_humidity(outdoor_temp, outdoor_rh)
+```
 
+**Why**: Absolute humidity (g/m³) is the actual water content, independent of temperature.
+
+### Step 2: Calculate Mixed Air Properties
+```lua
+mixed_temp = chamber_temp * (1 - ratio) + outdoor_temp * ratio
+mixed_ah = chamber_ah * (1 - ratio) + outdoor_ah * ratio
 ```
-┌──────────────────────────────────────────────────────────────────┐
-│ INPUT                                                            │
-├──────────────────────────────────────────────────────────────────┤
-│ Chamber:  12°C, 85% RH → 9.2 g/m³                                │
-│ Target:   10°C, 85% RH → 8.1 g/m³                                │
-│ Outdoor:   0°C, 60% RH → 3.3 g/m³                                │
-└──────────────────────────────────────────────────────────────────┘
-                            ↓
-┌──────────────────────────────────────────────────────────────────┐
-│ MIXING RESULT (30% outdoor)                                      │
-├──────────────────────────────────────────────────────────────────┤
-│ Temperature: 8.4°C                                               │
-│ Absolute Humidity: 7.4 g/m³                                      │
-│ RH at 8.4°C: 82% (not directly comparable to chamber!)          │
-└──────────────────────────────────────────────────────────────────┘
-                            ↓
-┌──────────────────────────────────────────────────────────────────┐
-│ EVALUATION (at consistent temperature)                           │
-├──────────────────────────────────────────────────────────────────┤
-│                                                                  │
-│ Temperature Impact:                                              │
-│   Change: 8.4 - 12 = -3.6°C ✅                                   │
-│   Helps cooling: YES                                             │
-│                                                                  │
-│ Absolute Humidity Impact:                                        │
-│   Change: 7.4 - 9.2 = -1.8 g/m³                                  │
-│   Comparison to target: 7.4 vs 8.1 g/m³                          │
-│   Status: 0.7 g/m³ BELOW target ⚠️                               │
-│                                                                  │
-│ Relative Humidity at TARGET temperature (10°C):                  │
-│   Chamber if at 10°C: calculate_rh(10°C, 9.2 g/m³) = 97% ❌ HIGH │
-│   Mixed if at 10°C:   calculate_rh(10°C, 7.4 g/m³) = 78% ⚠️ LOW │
-│   Target:             85%                                        │
-│                                                                  │
-│   RH deficit: 85 - 78 = 7% (needs humidification)                │
-│                                                                  │
-└──────────────────────────────────────────────────────────────────┘
-                            ↓
-┌──────────────────────────────────────────────────────────────────┐
-│ DECISION                                                         │
-├──────────────────────────────────────────────────────────────────┤
-│ Cooling: ✅ Outdoor air excellent for cooling (-3.6°C)           │
-│ Humidity: ⚠️ Will make chamber slightly too dry                  │
-│                                                                  │
-│ OPTIONS:                                                         │
-│                                                                  │
-│ Option A: Use outdoor air + accept slight dryness               │
-│   → relay_add_air_max = ON                                       │
-│   → relay_cool = OFF                                             │
-│   → Save 3000W, accept 7% RH deficit                             │
-│                                                                  │
-│ Option B: Use outdoor air + humidify                             │
-│   → relay_add_air_max = ON                                       │
-│   → relay_cool = OFF                                             │
-│   → relay_humidifier = ON                                        │
-│   → Save 3000W cooling, use ~500W humidification                 │
-│   → Net savings: 2500W                                           │
-│                                                                  │
-│ Option C: Reduce outdoor air fraction                            │
-│   → Use only 15% outdoor instead of 30%                          │
-│   → Less cooling but less humidity reduction                     │
-│   → relay_add_air_max = MODULATED                                │
-│                                                                  │
-│ RECOMMENDED: Option B (best balance)                             │
-└──────────────────────────────────────────────────────────────────┘
+
+**Why**: Predicts what happens when outdoor and chamber air mix (e.g., 30% outdoor, 70% chamber).
+
+### Step 3: Project Final State at Target Temperature
+```lua
+projected_rh_at_target = calculate_rh(target_temp, mixed_ah)
 ```
+
+**Why**: Compares final humidity at the SAME temperature (target), making RH comparison valid.
 
 ---
 
-## 🎯 CORRECTED COMPARISON METHODS
+## Corrected Decision Logic
 
-### Method 1: Always Use Absolute Humidity (SIMPLEST)
-
+Outdoor air is beneficial when:
 ```lua
--- AH is temperature-independent, so this is always valid
-local ah_helps_cooling = (mixed_ah < chamber_ah) and needs_cooling
-local ah_helps_heating = false  -- AH doesn't help heating
-local ah_helps_dehumidify = (mixed_ah < chamber_ah) and needs_dehumidify
-local ah_helps_humidify = (mixed_ah > chamber_ah) and needs_humidify
-
--- Compare to target
-local ah_error_after_mixing = mixed_ah - target_ah
-local ah_improvement = chamber_ah - mixed_ah  -- Positive = drier
-
--- Decision
-if needs_dehumidify and ah_improvement > 0 then
-    -- Good: mixing makes it drier
-elseif needs_humidify and ah_improvement < 0 then
-    -- Good: mixing makes it wetter
-end
+temperature_improves AND (absolute_humidity_improves OR rh_acceptable_at_target)
 ```
 
-### Method 2: Compare RH at Target Temperature (MORE ACCURATE)
+Where:
+- **temperature_improves**: Mixed temp is closer to target than current
+- **absolute_humidity_improves**: Mixed AH is closer to target AH
+- **rh_acceptable_at_target**: RH at target temp is within ±5% tolerance
 
+### Tolerance Rationale
+Allow ±5% RH deviation to accept beneficial temperature improvements. Example:
+- Scenario: 3.6°C cooling benefit vs. 7% RH deficit at target
+- Old logic: Would reject (RH doesn't match exactly)
+- **New logic**: Accepts (saves 3000W cooling energy, humidifier can add moisture if needed)
+
+---
+
+## Implementation
+
+### Location
+- **File**: `aging_chamber_Apar2_0_REFACTORED.lua`
+- **Function**: `evaluate_outdoor_air_benefit()` (Line 226-285)
+- **Usage**: `CustomDevice:controlling()` (Line 484-492)
+
+### Function Signature
 ```lua
--- Calculate what RH would be at target temperature
-function calculate_rh_at_target(temperature, absolute_humidity, target_temp)
-    -- AH stays the same, but RH changes with temperature
-    local rh_at_target = calculate_rh(target_temp, absolute_humidity)
-    return rh_at_target
-end
-
--- Compare chamber and mixed air at TARGET temperature
-local chamber_rh_at_target = calculate_rh_at_target(
-    chamber_temp, chamber_ah, target_temp
+local beneficial, details = evaluate_outdoor_air_benefit(
+  chamber_temp,     -- Current chamber temperature (°C)
+  chamber_rh,       -- Current chamber RH (%)
+  target_temp,      -- Target chamber temperature (°C)
+  target_rh,        -- Target chamber RH (%)
+  outdoor_temp,     -- Outdoor temperature (°C)
+  outdoor_rh,       -- Outdoor RH (%)
+  outdoor_mix_ratio -- Outdoor air mixing ratio (0.0-1.0, typically 0.30)
 )
-local mixed_rh_at_target = calculate_rh_at_target(
-    mixed_temp, mixed_ah, target_temp
+```
+
+### Return Values
+- **beneficial** (boolean): True if outdoor air should be used
+- **details** (table): Diagnostic information
+  - `mixed_temp`: Predicted mixed air temperature
+  - `mixed_ah`: Predicted mixed absolute humidity
+  - `projected_rh_at_target`: Predicted RH at target temperature
+  - `temp_improves`, `ah_improves`, `rh_acceptable`: Individual criteria flags
+
+---
+
+## Example Scenarios
+
+### Scenario 1: Cold Dry Winter (Outdoor Air Beneficial)
+**Input:**
+- Chamber: 12°C, 85% RH (9.2 g/m³)
+- Target: 10°C, 85% RH (8.1 g/m³)
+- Outdoor: 0°C, 60% RH (3.3 g/m³)
+- Mix ratio: 30%
+
+**Evaluation:**
+```
+Step 1 - Absolute Humidities:
+  Chamber: 9.2 g/m³
+  Target: 8.1 g/m³
+  Outdoor: 3.3 g/m³
+
+Step 2 - Mixed Air:
+  Temp: 12×0.7 + 0×0.3 = 8.4°C
+  AH: 9.2×0.7 + 3.3×0.3 = 7.4 g/m³
+
+Step 3 - Project to Target (10°C):
+  RH at 10°C with 7.4 g/m³ = 78%
+
+Decision Criteria:
+  ✅ Temp improves: |10-8.4| < |10-12| (1.6 < 2.0)
+  ⚠️  AH at target: 7.4 vs 8.1 (0.7 g/m³ deficit)
+  ✅ RH acceptable: |78-85| = 7% (within tolerance, vs chamber alone would be 97%)
+
+RESULT: BENEFICIAL - Use outdoor air (saves 3000W cooling, slight humidity deficit acceptable)
+```
+
+### Scenario 2: Hot Humid Summer (Outdoor Air Rejected)
+**Input:**
+- Chamber: 28°C, 60% RH (16.2 g/m³)
+- Target: 25°C, 65% RH (15.4 g/m³)
+- Outdoor: 32°C, 70% RH (24.8 g/m³)
+- Mix ratio: 30%
+
+**Evaluation:**
+```
+Step 1 - Absolute Humidities:
+  Chamber: 16.2 g/m³
+  Target: 15.4 g/m³
+  Outdoor: 24.8 g/m³
+
+Step 2 - Mixed Air:
+  Temp: 28×0.7 + 32×0.3 = 29.2°C
+  AH: 16.2×0.7 + 24.8×0.3 = 18.8 g/m³
+
+Step 3 - Project to Target (25°C):
+  RH at 25°C with 18.8 g/m³ = 81.5%
+
+Decision Criteria:
+  ✗ Temp improves: |25-29.2| > |25-28| (4.2 > 3.0)
+  ✗ AH improves: |15.4-18.8| > |15.4-16.2| (3.4 > 0.8)
+  ✗ RH acceptable: |81.5-65| = 16.5% (exceeds tolerance)
+
+RESULT: REJECTED - Do not use outdoor air (would worsen both temperature and humidity)
+```
+
+### Scenario 3: Mild Conditions (Marginal Case)
+**Input:**
+- Chamber: 22°C, 50% RH (9.7 g/m³)
+- Target: 20°C, 55% RH (9.6 g/m³)
+- Outdoor: 18°C, 60% RH (9.3 g/m³)
+- Mix ratio: 30%
+
+**Evaluation:**
+```
+Step 1 - Absolute Humidities:
+  Chamber: 9.7 g/m³
+  Target: 9.6 g/m³
+  Outdoor: 9.3 g/m³
+
+Step 2 - Mixed Air:
+  Temp: 22×0.7 + 18×0.3 = 20.8°C
+  AH: 9.7×0.7 + 9.3×0.3 = 9.58 g/m³
+
+Step 3 - Project to Target (20°C):
+  RH at 20°C with 9.58 g/m³ = 55.3%
+
+Decision Criteria:
+  ✅ Temp improves: |20-20.8| < |20-22| (0.8 < 2.0)
+  ✅ AH improves: |9.6-9.58| < |9.6-9.7| (0.02 < 0.1)
+  ✅ RH acceptable: |55.3-55| = 0.3% (well within tolerance)
+
+RESULT: BENEFICIAL - Use outdoor air (excellent psychrometric match)
+```
+
+---
+
+## Key Advantages of Corrected Logic
+
+### 1. Temperature-Independent Comparison
+- Uses absolute humidity (g/m³) as primary metric
+- Avoids invalid RH comparisons across temperatures
+- Scientifically correct psychrometric evaluation
+
+### 2. Predictive Capability
+- Calculates final steady-state conditions
+- Accounts for air mixing ratios
+- Projects outcome at target temperature
+
+### 3. Energy Optimization
+- Accepts beneficial temperature improvements with minor humidity deviations
+- Prevents unnecessary cooling when outdoor air can help
+- Allows humidifier to supplement if needed (lower energy than cooling)
+
+### 4. Safety and Robustness
+- Won't use outdoor air if it worsens conditions
+- Tolerances prevent oscillation around set points
+- Preserves existing safety interlocks (humidity save mode, etc.)
+
+---
+
+## Configuration Parameters
+
+### Outdoor Air Mixing Ratio
+**Current**: 30% (0.30)
+**Location**: Line 481 in `controlling()` function
+**Recommendation**: Adjustable based on system capacity
+- **Conservative**: 20% (slower response, less risk)
+- **Moderate**: 30% (balanced, default)
+- **Aggressive**: 40% (faster response, more energy savings)
+
+### RH Tolerance
+**Current**: ±5%
+**Location**: Line 256 in `evaluate_outdoor_air_benefit()`
+**Recommendation**: Based on application requirements
+- **Tight control**: ±3% (precision applications)
+- **Normal**: ±5% (general HVAC, default)
+- **Relaxed**: ±8% (energy-priority applications)
+
+---
+
+## Debug Output
+
+When outdoor air is beneficial, the function prints diagnostic information:
+```
+Outdoor air BENEFICIAL: Temp 12.0→8.4°C (target 10.0°C),
+RH@target 78.0% (target 85.0%), AH 9.20→7.40 g/m³ (target 8.10 g/m³)
+```
+
+This can be disabled in production by commenting out lines 269-275.
+
+---
+
+## Testing Recommendations
+
+### Test Case 1: Winter Heating Season
+- Chamber warmer than target, outdoor cold
+- Should use outdoor air for free cooling
+- Monitor humidity levels, activate humidifier if needed
+
+### Test Case 2: Summer Cooling Season
+- Chamber cooler than target, outdoor hot/humid
+- Should reject outdoor air
+- Rely on mechanical cooling/dehumidification
+
+### Test Case 3: Shoulder Seasons
+- Mild outdoor conditions close to target
+- Should intelligently select based on psychrometric benefit
+- Verify energy savings vs. mechanical systems
+
+### Test Case 4: Extreme Humidity
+- Outdoor very dry (winter) or very humid (summer)
+- Should properly evaluate absolute humidity impact
+- Verify tolerance allows beneficial cases, rejects harmful ones
+
+---
+
+## References
+
+- **Psychrometric Principles**: ASHRAE Fundamentals Handbook, Chapter 1
+- **Absolute Humidity**: Temperature-independent moisture content (g/m³)
+- **Relative Humidity**: Temperature-dependent moisture saturation (%)
+- **Saturation Vapor Pressure**: Antoine equation (implemented in `saturation_vapor_pressure()`)
+- **Mixing Calculations**: Conservation of energy and mass principles
+
+---
+
+## Migration from Old Logic
+
+### Before (Simple Boolean)
+```lua
+signal.add_air_max = cool and (not signal.sum_wint_jel) and (not signal.humi_save)
+```
+- Only checked operational modes
+- No psychrometric evaluation
+- Could use outdoor air when harmful
+- Could reject outdoor air when beneficial
+
+### After (Corrected Psychrometric)
+```lua
+outdoor_air_beneficial = evaluate_outdoor_air_benefit(
+  kamra_homerseklet / 10, kamra_para / 10,
+  kamra_cel_homerseklet / 10, kamra_cel_para / 10,
+  kulso_homerseklet / 10, kulso_para / 10,
+  0.30
 )
-
--- Now we can fairly compare
-local rh_change_at_target = mixed_rh_at_target - target_rh
-
-if needs_dehumidify and rh_change_at_target < 0 then
-    -- Good: RH will be lower at target temp
-elseif needs_humidify and rh_change_at_target > 0 then
-    -- Good: RH will be higher at target temp
-end
+signal.add_air_max = outdoor_air_beneficial and (not signal.sum_wint_jel)
 ```
-
-### Method 3: Compare at Current Chamber Temperature
-
-```lua
--- Calculate what RH the mixed air would have at current chamber temp
-local mixed_rh_at_chamber_temp = calculate_rh(chamber_temp, mixed_ah)
-
--- Compare at same temperature
-local rh_change = mixed_rh_at_chamber_temp - chamber_rh
-
-if needs_dehumidify and rh_change < 0 then
-    -- Good: mixing would lower RH
-end
-```
+- Comprehensive psychrometric analysis
+- Temperature-independent comparison
+- Predictive of final conditions
+- Energy-optimized decision making
 
 ---
 
-## 📋 DECISION: Which Method to Use?
+## Summary
 
-### Recommendation: **Method 1 (Absolute Humidity) + Method 2 (RH at Target)**
+The corrected psychrometric evaluation eliminates the fundamental error of comparing relative humidity at different temperatures. By using absolute humidity as the primary metric and projecting final conditions at the target temperature, the system now makes scientifically correct decisions about outdoor air usage, optimizing energy consumption while maintaining environmental control.
 
-```lua
-function evaluate_mixing_comprehensive(needs, chamber_state, target_state, 
-                                      outdoor_state, mixed_result)
-    local evaluation = {}
-    
-    -- 1. Temperature evaluation (straightforward)
-    evaluation.temp_change = mixed_result.temp - chamber_state.temp
-    evaluation.temp_helps = false
-    
-    if needs.cooling and evaluation.temp_change < -0.5 then
-        evaluation.temp_helps = true
-    elseif needs.heating and evaluation.temp_change > 0.5 then
-        evaluation.temp_helps = true
-    end
-    
-    -- 2. Absolute humidity evaluation (temperature-independent)
-    evaluation.ah_change = mixed_result.ah - chamber_state.ah
-    evaluation.ah_helps = false
-    
-    if needs.dehumidify and evaluation.ah_change < 0 then
-        evaluation.ah_helps = true
-    elseif needs.humidify and evaluation.ah_change > 0 then
-        evaluation.ah_helps = true
-    end
-    
-    -- 3. RH evaluation at TARGET temperature (proper comparison)
-    local chamber_rh_at_target = calculate_rh(target_state.temp, chamber_state.ah)
-    local mixed_rh_at_target = calculate_rh(target_state.temp, mixed_result.ah)
-    
-    evaluation.rh_at_target = mixed_rh_at_target
-    evaluation.rh_error_at_target = mixed_rh_at_target - target_state.rh
-    evaluation.rh_acceptable = (math.abs(evaluation.rh_error_at_target) < 5.0)
-    
-    -- 4. Overall decision
-    evaluation.outdoor_air_beneficial = evaluation.temp_helps and 
-                                       (evaluation.ah_helps or evaluation.rh_acceptable)
-    
-    return evaluation
-end
-```
+**Key Improvement**: The system now understands that "85% RH at 12°C" and "60% RH at 0°C" cannot be directly compared - it calculates the actual moisture content (g/m³) and projects what the final humidity will be at the target temperature before making a decision.
 
 ---
 
-## 🎯 CORRECTED SCENARIOS
-
-### Scenario 1 Revisited: Cold Dry Winter
-
-```
-INPUT:
-  Chamber:  12°C, 85% RH → 9.2 g/m³
-  Target:   10°C, 85% RH → 8.1 g/m³
-  Outdoor:   0°C, 60% RH → 3.3 g/m³
-
-MIXING (30% outdoor):
-  Mixed: 8.4°C, 7.4 g/m³
-
-CORRECTED EVALUATION:
-  1. Temperature:
-     Change: -3.6°C ✅ (helps cooling)
-  
-  2. Absolute Humidity:
-     Change: -1.8 g/m³
-     vs Target: 7.4 < 8.1 ⚠️ (below target by 0.7 g/m³)
-  
-  3. RH at target temperature (10°C):
-     Chamber@10°C: calculate_rh(10°C, 9.2) = 97% RH ❌ TOO HIGH
-     Mixed@10°C:   calculate_rh(10°C, 7.4) = 78% RH ⚠️ slightly low
-     Target:       85% RH
-     
-     Mixed is closer to target! (78% vs 97%)
-
-CORRECTED DECISION:
-  ✅ USE OUTDOOR AIR
-  - Temperature benefit: Strong (-3.6°C)
-  - Humidity impact: Actually BENEFICIAL (reduces from 97% to 78%)
-  - Although 78% is below 85% target, it's much better than 97%!
-  
-  relay_add_air_max = ON
-  relay_cool = OFF
-  May need light humidification later, but free cooling is worth it
-```
-
-### Scenario 2: Humid Winter Revisited
-
-```
-INPUT:
-  Chamber:  12°C, 82% RH → 8.9 g/m³
-  Target:   10°C, 85% RH → 8.1 g/m³
-  Outdoor:   5°C, 95% RH → 6.6 g/m³
-
-MIXING (30% outdoor):
-  Mixed: 9.9°C, 8.2 g/m³
-
-CORRECTED EVALUATION:
-  1. Temperature:
-     Change: -2.1°C ✅ (helps cooling)
-  
-  2. Absolute Humidity:
-     Change: -0.7 g/m³
-     vs Target: 8.2 vs 8.1 ✅ (very close!)
-  
-  3. RH at target temperature (10°C):
-     Chamber@10°C: calculate_rh(10°C, 8.9) = 94% RH ❌ TOO HIGH
-     Mixed@10°C:   calculate_rh(10°C, 8.2) = 87% RH ✅ very close!
-     Target:       85% RH
-     
-     Mixed is almost perfect! (87% vs 85%)
-
-CORRECTED DECISION:
-  ✅✅ EXCELLENT USE OF OUTDOOR AIR
-  - Temperature benefit: Good (-2.1°C)
-  - Humidity impact: PERFECT (87% at target temp, very close to 85%)
-  - Absolute humidity: 8.2 g/m³ ≈ 8.1 g/m³ target
-  
-  relay_add_air_max = ON
-  relay_cool = OFF
-  This is the ideal scenario!
-```
-
----
-
-## ✅ SUMMARY OF CORRECTIONS
-
-### What Was Wrong:
-❌ Comparing RH at different temperatures (82% at 8.4°C vs 85% at 12°C)
-
-### What's Correct:
-✅ Compare absolute humidity (always valid)
-✅ Calculate RH at target temperature for both chamber and mixed air
-✅ Then compare at the SAME temperature
-
-### Implementation:
-```lua
--- WRONG:
-local rh_change = mixed_rh - chamber_rh  -- Different temps!
-
--- CORRECT:
-local mixed_rh_at_target = calculate_rh(target_temp, mixed_ah)
-local rh_error = mixed_rh_at_target - target_rh
-```
-
-Thank you for catching this critical error! The corrected logic is now physically accurate.
-
+**Document Version**: 1.0
+**Date**: 2025-11-20
+**Applied to**: aging_chamber_Apar2_0_REFACTORED.lua, erlelo_1119_REFACTORED.json

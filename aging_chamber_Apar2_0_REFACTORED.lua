@@ -220,6 +220,70 @@ local function ah_dp_befujt_szamol()
   ah_dp_table1:setValueByPath("dp_befujt",dp,true)
 end
 
+-- CORRECTED PSYCHROMETRIC EVALUATION for outdoor air benefit
+-- Implements three-step method to avoid comparing RH at different temperatures
+-- Reference: CORRECTED_PSYCHROMETRIC_EVALUATION.md
+local function evaluate_outdoor_air_benefit(
+  chamber_temp,     -- Current chamber temperature (°C)
+  chamber_rh,       -- Current chamber RH (%)
+  target_temp,      -- Target chamber temperature (°C)
+  target_rh,        -- Target chamber RH (%)
+  outdoor_temp,     -- Outdoor temperature (°C)
+  outdoor_rh,       -- Outdoor RH (%)
+  outdoor_mix_ratio -- Outdoor air mixing ratio (0.0-1.0, e.g., 0.3 = 30%)
+)
+  -- STEP 1: Calculate absolute humidities (temperature-independent metric)
+  local chamber_ah = calculate_absolute_humidity(chamber_temp, chamber_rh)
+  local target_ah = calculate_absolute_humidity(target_temp, target_rh)
+  local outdoor_ah = calculate_absolute_humidity(outdoor_temp, outdoor_rh)
+
+  -- STEP 2: Calculate mixed air properties (assuming perfect mixing)
+  local mixed_temp = chamber_temp * (1 - outdoor_mix_ratio) + outdoor_temp * outdoor_mix_ratio
+  local mixed_ah = chamber_ah * (1 - outdoor_mix_ratio) + outdoor_ah * outdoor_mix_ratio
+
+  -- STEP 3: Project final steady-state at target temperature
+  -- Calculate what RH would be at target temperature with mixed absolute humidity
+  local projected_rh_at_target = calculate_rh(target_temp, mixed_ah)
+
+  -- DECISION CRITERIA (corrected - comparing at same temperature):
+  -- 1. Temperature benefit: Moving toward target?
+  local temp_delta_current = math.abs(target_temp - chamber_temp)
+  local temp_delta_mixed = math.abs(target_temp - mixed_temp)
+  local temp_improves = temp_delta_mixed < temp_delta_current
+
+  -- 2. Humidity evaluation at target temperature (NOT at mixed temperature!)
+  -- Allow ±5% RH tolerance to avoid rejecting beneficial temperature improvements
+  local rh_tolerance = 5.0
+  local rh_acceptable = math.abs(projected_rh_at_target - target_rh) <= rh_tolerance
+
+  -- 3. Absolute humidity check: Is mixed AH closer to target than current?
+  local ah_delta_current = math.abs(target_ah - chamber_ah)
+  local ah_delta_mixed = math.abs(target_ah - mixed_ah)
+  local ah_improves = ah_delta_mixed <= ah_delta_current
+
+  -- CORRECTED DECISION LOGIC:
+  -- Use outdoor air if temperature improves AND (humidity improves OR remains acceptable)
+  local beneficial = temp_improves and (ah_improves or rh_acceptable)
+
+  -- Debug output (can be removed in production)
+  if beneficial then
+    print(string.format("Outdoor air BENEFICIAL: Temp %.1f→%.1f°C (target %.1f°C), " ..
+                        "RH@target %.1f%% (target %.1f%%), AH %.2f→%.2f g/m³ (target %.2f g/m³)",
+                        chamber_temp, mixed_temp, target_temp,
+                        projected_rh_at_target, target_rh,
+                        chamber_ah, mixed_ah, target_ah))
+  end
+
+  return beneficial, {
+    mixed_temp = mixed_temp,
+    mixed_ah = mixed_ah,
+    projected_rh_at_target = projected_rh_at_target,
+    temp_improves = temp_improves,
+    ah_improves = ah_improves,
+    rh_acceptable = rh_acceptable
+  }
+end
+
 --Fő szabályozási ciklus
 function CustomDevice:controlling()
 
@@ -405,9 +469,30 @@ function CustomDevice:controlling()
   local cool_rel = cool and (not signal.sleep) and signal.sum_wint_jel
 
   warm_dis = kamra_para_futes_tiltas or futes_tiltas
-  dehumi = kamra_para_hutes  or befujt_para_hutes 
+  dehumi = kamra_para_hutes  or befujt_para_hutes
   cool_dis = kamra_hutes_tiltas
-  signal.add_air_max = cool and (not signal.sum_wint_jel) and (not signal.humi_save)
+
+  -- CORRECTED OUTDOOR AIR EVALUATION (replaces simple boolean logic)
+  -- Old logic: signal.add_air_max = cool and (not signal.sum_wint_jel) and (not signal.humi_save)
+  -- New logic: Psychrometric evaluation to determine actual benefit
+  local outdoor_air_beneficial = false
+  if not signal.humi_save then  -- Only evaluate if not in humidity save mode
+    -- Assume 30% outdoor air mixing ratio (configurable)
+    local outdoor_mix_ratio = 0.30
+
+    -- Evaluate if outdoor air is beneficial using corrected psychrometric logic
+    outdoor_air_beneficial = evaluate_outdoor_air_benefit(
+      kamra_homerseklet / 10,      -- Current chamber temp (°C)
+      kamra_para / 10,              -- Current chamber RH (%)
+      kamra_cel_homerseklet / 10,   -- Target chamber temp (°C)
+      kamra_cel_para / 10,          -- Target chamber RH (%)
+      kulso_homerseklet / 10,       -- Outdoor temp (°C)
+      kulso_para / 10,              -- Outdoor RH (%)
+      outdoor_mix_ratio             -- 30% outdoor air
+    )
+  end
+
+  signal.add_air_max = outdoor_air_beneficial and (not signal.sum_wint_jel)
   signal.reventon = signal.humi_save
   signal.add_air_save = signal.humi_save
   signal.bypass_open = signal.humi_save or (cool and not dehumi)
