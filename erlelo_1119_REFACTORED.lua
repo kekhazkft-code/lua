@@ -54,13 +54,23 @@ end
 function CustomDevice:onInit()
   print('init')
   self:setValue('status', 'unknown')
-  
+
+  -- Initialize all relays to OFF state
+  relay_warm:call('turn_off')
+  relay_cool:call('turn_off')
+  relay_humidifier:call('turn_off')
+  relay_add_air_max:call('turn_off')
+  relay_reventon:call('turn_off')
+  relay_add_air_save:call('turn_off')
+  relay_bypass_open:call('turn_off')
+  relay_main_fan:call('turn_off')
+
   local com = self:c()
   self:getElement('baudrate'):setValue('value', tostring(com:getValue('baud_rate')), true)
   self:getElement('parity'):setValue('value', com:getValue('parity'), true)
   self:getElement('stopbits'):setValue('value', com:getValue('stop_bits'), true)
   self:getElement('slave_id'):setValue('value', tostring(com:getValue('slave_address')), true)
-  
+
   local xceiver = com:getValue('associations.transceiver')
   self:getElement('xceiver'):setValue('associations.selected', xceiver, true)
   befujt_hibaszam1:setValue(3,true)
@@ -550,11 +560,19 @@ function CustomDevice:controlling()
   self:getElement('text_input_1_cool'):setValue("value",  output_text,true)
   if warm_dis then output_text ="Fűtés Tiltva!" else  output_text = " " end
   self:getElement('text_input_2_wdis'):setValue("value",  output_text,true)
-  if dehumi then output_text ="Páramentesítés!" else output_text = " " end
-  if cool_dis then output_text ="Hűtés Tiltva!" end
+
+  -- Humidity control display (dehumidification and humidification share same widget)
+  -- Priority: cool_dis > dehumi > humidification
+  if cool_dis then
+    output_text ="Hűtés Tiltva!"
+  elseif dehumi then
+    output_text ="Páramentesítés!"
+  elseif signal.humidification then
+    output_text ="Párásítás Aktív!"
+  else
+    output_text = " "
+  end
   self:getElement('text_input_3_cdis'):setValue("value",  output_text,true)
-  if signal.humidification then output_text ="Párásítás Aktív!" else output_text = " " end
-  self:getElement('text_input_4_humidifier'):setValue("value",  output_text,true)
   
   --jelzések és flag-ek - CRITICAL: Store old values to detect changes
   local old_signal = signals1:getValue({})
