@@ -30,7 +30,7 @@ end
 function CustomDevice:onInit()
   print('init')
   self:setValue('status', 'unknown')
-  kulso_szimulalt_ertekek_v1:setvalue(false,true)
+  kulso_szimulalt_ertekek_v1:setValue(false,true)
   --** _2_tx_befujt_relativ_para) = false
   kamra_switch = false
   local com = self:c()
@@ -417,10 +417,10 @@ function CustomDevice:kamra_ah_dp()
 end
 
 function CustomDevice:kulso_ah_dp()
-          local rh = kamra_para_v1:getValue()/10
-          local temp = kamra_homerseklet_v1:getValue()/10
+          local rh = kulso_para_v1:getValue()/10
+          local temp = kulso_homerseklet_v1:getValue()/10
           local dp, err = calc_dew_point(temp, rh)
           local ah =calculate_absolute_humidity (temp, rh)
           ah_dp_table1:setValueByPath("dp_kulso",dp,true)
-          ah_dp_table1:setValueByPath("ah_kulso",ah,true)  
+          ah_dp_table1:setValueByPath("ah_kulso",ah,true)
 end
