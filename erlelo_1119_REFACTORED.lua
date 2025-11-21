@@ -516,7 +516,14 @@ function CustomDevice:controlling()
   signal.add_air_max = outdoor_air_beneficial and (not signal.sum_wint_jel)
   signal.reventon = signal.humi_save
   signal.add_air_save = signal.humi_save
-  signal.bypass_open = signal.humi_save or (cool and not dehumi)
+
+  -- BYPASS PRIORITY LOGIC:
+  -- Priority 1: If humi_save mode - always open bypass
+  -- Priority 2: If outdoor air active - bypass state doesn't matter (not using water)
+  -- Priority 3: If cooling without dehumidification - open bypass (8°C water)
+  -- Priority 4: If dehumidification needed - close bypass (0°C water)
+  signal.bypass_open = signal.humi_save or ((cool and not dehumi) and not signal.add_air_max)
+
   signal.main_fan = signal.sum_wint_jel
 
   -- HUMIDITY CONTROL STRATEGY: Depends on humidifier availability
