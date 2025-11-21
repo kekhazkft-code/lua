@@ -1,0 +1,260 @@
+Aging Chamber Test Framework - Comprehensive Test Suite
+============================================================
+
+1. Generating test scenarios...
+   - Basic event propagation scenarios...
+     Generated 176 basic scenarios
+   - Comprehensive feature scenarios...
+     Generated 2031 comprehensive scenarios
+
+   Total scenarios: 2207
+
+2. Running tests...
+Running 2207 test scenarios...
+  Progress: 10/2207
+  Progress: 20/2207
+  Progress: 30/2207
+  Progress: 40/2207
+  Progress: 50/2207
+  Progress: 60/2207
+  Progress: 70/2207
+  Progress: 80/2207
+  Progress: 90/2207
+  Progress: 100/2207
+  Progress: 110/2207
+  Progress: 120/2207
+  Progress: 130/2207
+  Progress: 140/2207
+  Progress: 150/2207
+  Progress: 160/2207
+  Progress: 170/2207
+  Progress: 180/2207
+  Progress: 190/2207
+  Progress: 200/2207
+  Progress: 210/2207
+  Progress: 220/2207
+  Progress: 230/2207
+  Progress: 240/2207
+  Progress: 250/2207
+  Progress: 260/2207
+  Progress: 270/2207
+  Progress: 280/2207
+  Progress: 290/2207
+  Progress: 300/2207
+  Progress: 310/2207
+  Progress: 320/2207
+  Progress: 330/2207
+  Progress: 340/2207
+  Progress: 350/2207
+  Progress: 360/2207
+  Progress: 370/2207
+  Progress: 380/2207
+  Progress: 390/2207
+  Progress: 400/2207
+  Progress: 410/2207
+  Progress: 420/2207
+  Progress: 430/2207
+  Progress: 440/2207
+  Progress: 450/2207
+  Progress: 460/2207
+  Progress: 470/2207
+  Progress: 480/2207
+  Progress: 490/2207
+  Progress: 500/2207
+  Progress: 510/2207
+  Progress: 520/2207
+  Progress: 530/2207
+  Progress: 540/2207
+  Progress: 550/2207
+  Progress: 560/2207
+  Progress: 570/2207
+  Progress: 580/2207
+  Progress: 590/2207
+  Progress: 600/2207
+  Progress: 610/2207
+  Progress: 620/2207
+  Progress: 630/2207
+  Progress: 640/2207
+  Progress: 650/2207
+  Progress: 660/2207
+  Progress: 670/2207
+  Progress: 680/2207
+  Progress: 690/2207
+  Progress: 700/2207
+  Progress: 710/2207
+  Progress: 720/2207
+  Progress: 730/2207
+  Progress: 740/2207
+  Progress: 750/2207
+  Progress: 760/2207
+  Progress: 770/2207
+  Progress: 780/2207
+  Progress: 790/2207
+  Progress: 800/2207
+  Progress: 810/2207
+  Progress: 820/2207
+  Progress: 830/2207
+  Progress: 840/2207
+  Progress: 850/2207
+  Progress: 860/2207
+  Progress: 870/2207
+  Progress: 880/2207
+  Progress: 890/2207
+  Progress: 900/2207
+  Progress: 910/2207
+  Progress: 920/2207
+  Progress: 930/2207
+  Progress: 940/2207
+  Progress: 950/2207
+  Progress: 960/2207
+  Progress: 970/2207
+  Progress: 980/2207
+  Progress: 990/2207
+  Progress: 1000/2207
+  Progress: 1010/2207
+  Progress: 1020/2207
+  Progress: 1030/2207
+  Progress: 1040/2207
+  Progress: 1050/2207
+  Progress: 1060/2207
+  Progress: 1070/2207
+  Progress: 1080/2207
+  Progress: 1090/2207
+  Progress: 1100/2207
+  Progress: 1110/2207
+  Progress: 1120/2207
+  Progress: 1130/2207
+  Progress: 1140/2207
+  Progress: 1150/2207
+  Progress: 1160/2207
+  Progress: 1170/2207
+  Progress: 1180/2207
+  Progress: 1190/2207
+  Progress: 1200/2207
+  Progress: 1210/2207
+  Progress: 1220/2207
+  Progress: 1230/2207
+  Progress: 1240/2207
+  Progress: 1250/2207
+  Progress: 1260/2207
+  Progress: 1270/2207
+  Progress: 1280/2207
+  Progress: 1290/2207
+  Progress: 1300/2207
+  Progress: 1310/2207
+  Progress: 1320/2207
+  Progress: 1330/2207
+  Progress: 1340/2207
+  Progress: 1350/2207
+  Progress: 1360/2207
+  Progress: 1370/2207
+  Progress: 1380/2207
+  Progress: 1390/2207
+  Progress: 1400/2207
+  Progress: 1410/2207
+  Progress: 1420/2207
+  Progress: 1430/2207
+  Progress: 1440/2207
+  Progress: 1450/2207
+  Progress: 1460/2207
+  Progress: 1470/2207
+  Progress: 1480/2207
+  Progress: 1490/2207
+  Progress: 1500/2207
+  Progress: 1510/2207
+  Progress: 1520/2207
+  Progress: 1530/2207
+  Progress: 1540/2207
+  Progress: 1550/2207
+  Progress: 1560/2207
+  Progress: 1570/2207
+  Progress: 1580/2207
+  Progress: 1590/2207
+  Progress: 1600/2207
+  Progress: 1610/2207
+  Progress: 1620/2207
+  Progress: 1630/2207
+  Progress: 1640/2207
+  Progress: 1650/2207
+  Progress: 1660/2207
+  Progress: 1670/2207
+  Progress: 1680/2207
+  Progress: 1690/2207
+  Progress: 1700/2207
+  Progress: 1710/2207
+  Progress: 1720/2207
+  Progress: 1730/2207
+  Progress: 1740/2207
+  Progress: 1750/2207
+  Progress: 1760/2207
+  Progress: 1770/2207
+  Progress: 1780/2207
+  Progress: 1790/2207
+  Progress: 1800/2207
+  Progress: 1810/2207
+  Progress: 1820/2207
+  Progress: 1830/2207
+  Progress: 1840/2207
+  Progress: 1850/2207
+  Progress: 1860/2207
+  Progress: 1870/2207
+  Progress: 1880/2207
+  Progress: 1890/2207
+  Progress: 1900/2207
+  Progress: 1910/2207
+  Progress: 1920/2207
+  Progress: 1930/2207
+  Progress: 1940/2207
+  Progress: 1950/2207
+  Progress: 1960/2207
+  Progress: 1970/2207
+  Progress: 1980/2207
+  Progress: 1990/2207
+  Progress: 2000/2207
+  Progress: 2010/2207
+  Progress: 2020/2207
+  Progress: 2030/2207
+  Progress: 2040/2207
+  Progress: 2050/2207
+  Progress: 2060/2207
+  Progress: 2070/2207
+  Progress: 2080/2207
+  Progress: 2090/2207
+  Progress: 2100/2207
+  Progress: 2110/2207
+  Progress: 2120/2207
+  Progress: 2130/2207
+  Progress: 2140/2207
+  Progress: 2150/2207
+  Progress: 2160/2207
+  Progress: 2170/2207
+  Progress: 2180/2207
+  Progress: 2190/2207
+  Progress: 2200/2207
+
+Test Results:
+  Total: 2207
+  Passed: 2192
+  Failed: 15
+  Pass Rate: 99.3%
+
+3. Results by category:
+   Better_Cold_Than_Dry: 7/7 (100.0%)
+   Bypass_Outdoor_Air_Coordination: 2/4 (50.0%)
+   Combined_Scenarios: 2/3 (66.7%)
+   Cycle Time: 10/10 (100.0%)
+   Edge Cases: 16/16 (100.0%)
+   Event Propagation: 21/21 (100.0%)
+   Humi_Save_Mode: 1/2 (50.0%)
+   Humidification_With_Equipment: 3/3 (100.0%)
+   Humidity Control: 24/24 (100.0%)
+   Integration: 4/6 (66.7%)
+   Mode Switching: 6/6 (100.0%)
+   Psychrometric: 27/36 (75.0%)
+   Relay Control: 12/12 (100.0%)
+   Systematic_Combinations: 2000/2000 (100.0%)
+   Temperature Control: 45/45 (100.0%)
+   Temperature_Difference_Threshold: 8/8 (100.0%)
+   Water_Cooling_Backup: 4/4 (100.0%)
+
+4. Tests complete!

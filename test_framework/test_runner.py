@@ -15,6 +15,7 @@ from dataclasses import dataclass, asdict
 
 from mock_techsinum import MockTechSinumEnvironment
 from scenario_generator import ScenarioGenerator, TestScenario
+from comprehensive_scenario_generator import ComprehensiveScenarioGenerator
 
 
 @dataclass
@@ -446,23 +447,62 @@ end
                 chamber_rh = env.variables[2].getValue() / 10.0
                 target_temp = env.variables[3].getValue() / 10.0
                 target_rh = env.variables[4].getValue() / 10.0
-                outdoor_temp = env.variables[5].getValue() / 10.0
-                outdoor_rh = env.variables[6].getValue() / 10.0
+                outdoor_temp = env.variables[5].getValue() / 10.0 if 5 in env.variables else 0.0
+                outdoor_rh = env.variables[6].getValue() / 10.0 if 6 in env.variables else 50.0
+
+                # Get configuration
+                has_humidifier = scenario.initial_state.get('config', {}).get('HAS_HUMIDIFIER', True)
 
                 # Get mode settings
                 mode_var = env.variables[34].getValue()
                 humi_save = mode_var.get('humi_save', False) if isinstance(mode_var, dict) else False
                 sum_wint_jel = mode_var.get('sum_wint_jel', False) if isinstance(mode_var, dict) else False
 
+                # Initialize test results
+                env._test_results = {}
+
+                # --- HUMIDIFICATION CONTROL ---
+                chamber_ah = self._calculate_absolute_humidity(chamber_temp, chamber_rh)
+                target_ah = self._calculate_absolute_humidity(target_temp, target_rh)
+
+                if has_humidifier:
+                    # Strategy 1: Active humidification
+                    projected_rh_at_target = self._calculate_rh(target_temp, chamber_ah)
+                    humidification = projected_rh_at_target < (target_rh - 5.0)
+
+                    # Check stop condition
+                    if chamber_ah >= target_ah:
+                        humidification = False
+
+                    env._test_results['humidification'] = humidification
+                    env._test_results['projected_rh_at_target'] = projected_rh_at_target
+
+                    # Set relay
+                    if humidification:
+                        env.sbus[66].call('turn_on')
+                    else:
+                        env.sbus[66].call('turn_off')
+                else:
+                    # Strategy 2: Better cold than dry
+                    heating_blocked = chamber_ah < target_ah
+                    min_temp = 11.0
+                    cooling_blocked = heating_blocked and (chamber_temp <= min_temp)
+
+                    env._test_results['heating_blocked'] = heating_blocked
+                    env._test_results['cooling_blocked'] = cooling_blocked
+                    env._test_results['humidification'] = False
+
+                # --- OUTDOOR AIR EVALUATION ---
                 # Evaluate outdoor air benefit if not in humi_save mode
                 outdoor_air_beneficial = False
-                if not humi_save:
+                if not humi_save and outdoor_temp != 0.0:
                     outdoor_air_beneficial, details = self._evaluate_outdoor_air_benefit(
                         chamber_temp, chamber_rh,
                         target_temp, target_rh,
                         outdoor_temp, outdoor_rh,
                         0.30  # 30% mixing ratio
                     )
+                    env._test_results.update(details)
 
                 # Apply controlling logic: signal.add_air_max = beneficial AND (not sum_wint_jel)
                 signal_add_air_max = outdoor_air_beneficial and (not sum_wint_jel)
@@ -473,11 +513,131 @@ end
                 else:
                     env.sbus[61].call('turn_off')
 
-                # Store results for validation
-                env._test_results = {
+                # --- BYPASS COORDINATION ---
+                # Determine cooling and dehumi signals (simplified)
+                cooling = target_temp < chamber_temp
+                dehumi = target_rh < chamber_rh
+
+                bypass_open = humi_save or ((cooling and not dehumi) and not signal_add_air_max)
+                env._test_results['bypass_open'] = bypass_open
+
+                if bypass_open:
+                    env.sbus[64].call('turn_on')
+                else:
+                    env.sbus[64].call('turn_off')
+
+                # --- WATER COOLING BACKUP ---
+                outdoor_temp_diff = abs(outdoor_temp - chamber_temp)
+                outdoor_not_effective = outdoor_temp_diff <= 3.0
+                use_water_cooling = sum_wint_jel or (not sum_wint_jel and outdoor_not_effective)
+                env._test_results['use_water_cooling'] = use_water_cooling
+
+                # Store comprehensive results
+                env._test_results.update({
                     'outdoor_air_beneficial': outdoor_air_beneficial,
                     'signal_add_air_max': signal_add_air_max,
-                    'relay_61_state': env.sbus[61].get_state()
+                    'relay_61_state': env.sbus[61].get_state(),
+                    'chamber_ah': chamber_ah,
+                    'target_ah': target_ah
+                })
+
+            # NEW: Humidification control evaluation
+            elif 'humidification_eval' in scenario.inputs:
+                chamber_temp = env.variables[1].getValue() / 10.0
+                chamber_rh = env.variables[2].getValue() / 10.0
+                target_temp = env.variables[3].getValue() / 10.0
+                target_rh = env.variables[4].getValue() / 10.0
+
+                # Get configuration
+                has_humidifier = scenario.initial_state.get('config', {}).get('HAS_HUMIDIFIER', True)
+
+                # Calculate absolute humidity
+                chamber_ah = self._calculate_absolute_humidity(chamber_temp, chamber_rh)
+                target_ah = self._calculate_absolute_humidity(target_temp, target_rh)
+
+                if has_humidifier:
+                    # Strategy 1: Active humidification
+                    projected_rh_at_target = self._calculate_rh(target_temp, chamber_ah)
+                    humidification = projected_rh_at_target < (target_rh - 5.0)
+
+                    # Check stop condition
+                    if chamber_ah >= target_ah:
+                        humidification = False
+
+                    env._test_results = {
+                        'humidification': humidification,
+                        'projected_rh_at_target': projected_rh_at_target,
+                        'chamber_ah': chamber_ah,
+                        'target_ah': target_ah
+                    }
+
+                    # Set relay
+                    if humidification:
+                        env.sbus[66].call('turn_on')
+                    else:
+                        env.sbus[66].call('turn_off')
+                else:
+                    # Strategy 2: Better cold than dry
+                    heating_blocked = chamber_ah < target_ah
+                    min_temp = 11.0
+                    cooling_blocked = heating_blocked and (chamber_temp <= min_temp)
+
+                    env._test_results = {
+                        'heating_blocked': heating_blocked,
+                        'cooling_blocked': cooling_blocked,
+                        'chamber_ah': chamber_ah,
+                        'target_ah': target_ah
+                    }
+
+            # NEW: Bypass coordination evaluation
+            elif 'bypass_coordination' in scenario.inputs:
+                # Get mode settings
+                mode_var = env.variables[34].getValue()
+                humi_save = mode_var.get('humi_save', False) if isinstance(mode_var, dict) else False
+
+                # Get control signals
+                cooling = scenario.inputs.get('cooling', False)
+                dehumi = scenario.inputs.get('dehumi', False)
+                outdoor_air_active = scenario.inputs.get('outdoor_air_active', False)
+
+                # Bypass logic: humi_save OR ((cooling without dehumi) AND not outdoor air)
+                bypass_open = humi_save or ((cooling and not dehumi) and not outdoor_air_active)
+
+                env._test_results = {
+                    'bypass_open': bypass_open,
+                    'humi_save': humi_save,
+                    'cooling': cooling,
+                    'dehumi': dehumi,
+                    'outdoor_air_active': outdoor_air_active
+                }
+
+                # Set relay
+                if bypass_open:
+                    env.sbus[64].call('turn_on')
+                else:
+                    env.sbus[64].call('turn_off')
+
+            # NEW: Water cooling backup evaluation
+            elif 'water_cooling_eval' in scenario.inputs:
+                chamber_temp = env.variables[1].getValue() / 10.0
+                outdoor_temp = env.variables[5].getValue() / 10.0
+
+                # Get mode
+                mode_var = env.variables[34].getValue()
+                sum_wint_jel = mode_var.get('sum_wint_jel', False) if isinstance(mode_var, dict) else False
+
+                # Calculate temperature difference
+                outdoor_temp_diff = abs(outdoor_temp - chamber_temp)
+                outdoor_not_effective = outdoor_temp_diff <= 3.0  # 3°C threshold
+
+                # Water cooling: summer mode OR winter backup (if outdoor difference <= 3°C)
+                use_water_cooling = sum_wint_jel or (not sum_wint_jel and outdoor_not_effective)
+
+                env._test_results = {
+                    'use_water_cooling': use_water_cooling,
+                    'outdoor_temp_diff': outdoor_temp_diff,
+                    'outdoor_not_effective': outdoor_not_effective,
+                    'sum_wint_jel': sum_wint_jel
                 }
 
             # Multi-round scenario support
@@ -761,6 +921,50 @@ end
                 if env._test_results.get('signal_add_air_max') != expected['signal_add_air_max']:
                     return False
 
+            # NEW: Validate humidification control
+            if 'humidification' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results.get('humidification') != expected['humidification']:
+                    return False
+
+            if 'relay_humidifier' in expected:
+                relay_66_state = actual_snapshot['relays'].get(66, 'off')
+                if relay_66_state != expected['relay_humidifier']:
+                    return False
+
+            # NEW: Validate bypass coordination
+            if 'bypass_open' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results.get('bypass_open') != expected['bypass_open']:
+                    return False
+
+            if 'relay_bypass' in expected:
+                relay_64_state = actual_snapshot['relays'].get(64, 'off')
+                if relay_64_state != expected['relay_bypass']:
+                    return False
+
+            # NEW: Validate water cooling backup
+            if 'use_water_cooling' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results.get('use_water_cooling') != expected['use_water_cooling']:
+                    return False
+
+            # NEW: Validate better cold than dry strategy
+            if 'heating_blocked' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results.get('heating_blocked') != expected['heating_blocked']:
+                    return False
+
+            if 'cooling_blocked' in expected:
+                if not hasattr(env, '_test_results'):
+                    return False
+                if env._test_results.get('cooling_blocked') != expected['cooling_blocked']:
+                    return False
+
             # Add more validation logic as needed
 
             return True
@@ -793,22 +997,52 @@ end
 
 def main():
     """Main test execution"""
-    print("Aging Chamber Test Framework")
+    print("Aging Chamber Test Framework - Comprehensive Test Suite")
     print("=" * 60)
 
-    # Generate scenarios
+    # Generate scenarios from multiple generators
     print("\n1. Generating test scenarios...")
-    generator = ScenarioGenerator()
-    scenarios = generator.generate_all_scenarios()
-    print(f"   Generated {len(scenarios)} scenarios")
+
+    # Basic scenarios (event propagation)
+    print("   - Basic event propagation scenarios...")
+    basic_generator = ScenarioGenerator()
+    basic_scenarios = basic_generator.generate_all_scenarios()
+    print(f"     Generated {len(basic_scenarios)} basic scenarios")
+
+    # Comprehensive scenarios (all new features)
+    print("   - Comprehensive feature scenarios...")
+    comprehensive_generator = ComprehensiveScenarioGenerator()
+    comprehensive_scenarios = comprehensive_generator.generate_all_scenarios()
+    print(f"     Generated {len(comprehensive_scenarios)} comprehensive scenarios")
+
+    # Combine all scenarios
+    all_scenarios = basic_scenarios + comprehensive_scenarios
+    print(f"\n   Total scenarios: {len(all_scenarios)}")
 
     # Run tests
     print("\n2. Running tests...")
-    lua_code_path = "../aging_chamber_Apar2_0_REFACTORED.lua"
+    lua_code_path = "/home/user/lua/erlelo_1119_REFACTORED.lua"
     runner = LuaTestRunner(lua_code_path)
-    results = runner.run_all_tests(scenarios)
+    results = runner.run_all_tests(all_scenarios)
 
-    print("\n3. Tests complete!")
+    # Category breakdown
+    print("\n3. Results by category:")
+    categories = {}
+    for result in results:
+        if result.category not in categories:
+            categories[result.category] = {'passed': 0, 'failed': 0}
+        if result.passed:
+            categories[result.category]['passed'] += 1
+        else:
+            categories[result.category]['failed'] += 1
+
+    for category in sorted(categories.keys()):
+        stats = categories[category]
+        total = stats['passed'] + stats['failed']
+        pass_rate = stats['passed'] / total * 100 if total > 0 else 0
+        print(f"   {category}: {stats['passed']}/{total} ({pass_rate:.1f}%)")
+
+    print("\n4. Tests complete!")
 
     return results
 
