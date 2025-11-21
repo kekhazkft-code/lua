@@ -47,6 +47,10 @@ local TEMP_CHANGE_THRESHOLD = 2  -- 0.2°C minimum change to propagate (int*10)
 local HUMI_CHANGE_THRESHOLD = 3  -- 0.3% minimum change to propagate (int*10)
 local MIN_SUPPLY_AIR_TEMP = 60   -- 6.0°C minimum supply air temperature (int*10)
 
+-- Humidifier configuration
+local HAS_HUMIDIFIER = true  -- Set to false if no humidifier available
+local MIN_TEMP_WITHOUT_HUMIDIFIER = 110  -- 11.0°C minimum temp when no humidifier (int*10)
+
 function CustomDevice:c()
   return self:getComponent('com')
 end
@@ -515,26 +519,59 @@ function CustomDevice:controlling()
   signal.bypass_open = signal.humi_save or (cool and not dehumi)
   signal.main_fan = signal.sum_wint_jel
 
-  -- HUMIDIFICATION CONTROL LOGIC
+  -- HUMIDITY CONTROL STRATEGY: Depends on humidifier availability
   -- Independent of summer/winter mode (sum_wint_jel)
-  -- Start: when current RH projected to target temp is 5% below target
-  -- Stop: when current absolute humidity exceeds target absolute humidity
   if not kamra_hibaflag then
     -- Calculate absolute humidities
     local chamber_ah = calculate_absolute_humidity(kamra_homerseklet / 10, kamra_para / 10)
     local target_ah = calculate_absolute_humidity(kamra_cel_homerseklet / 10, kamra_cel_para / 10)
 
-    -- Project current AH to what RH would be at target temperature
-    local projected_rh_at_target = calculate_rh(kamra_cel_homerseklet / 10, chamber_ah)
+    if HAS_HUMIDIFIER then
+      -- STRATEGY 1: Active humidification available
+      -- Start: when current RH projected to target temp is 5% below target
+      -- Stop: when current absolute humidity reaches target
+      local projected_rh_at_target = calculate_rh(kamra_cel_homerseklet / 10, chamber_ah)
 
-    -- Start humidification if projected RH is 5% below target
-    if projected_rh_at_target < (kamra_cel_para / 10 - 5.0) then
-      kamra_humidification = true
-    end
+      if projected_rh_at_target < (kamra_cel_para / 10 - 5.0) then
+        kamra_humidification = true
+      end
 
-    -- Stop humidification if current absolute humidity equals or exceeds target
-    if chamber_ah >= target_ah then
-      kamra_humidification = false
+      if chamber_ah >= target_ah then
+        kamra_humidification = false
+      end
+    else
+      -- STRATEGY 2: "Better cold than dry" - no humidifier available
+      -- Limit heating to prevent absolute humidity from dropping below target
+      -- Minimum temp is 11°C, but prioritize maintaining humidity
+
+      -- Check if heating would cause AH to drop below target
+      if chamber_ah < target_ah then
+        -- Already below target AH - don't heat further
+        kamra_futes = false
+        befujt_futes = false
+
+        -- Allow cooling to increase RH (unless already at minimum temp)
+        if kamra_homerseklet > MIN_TEMP_WITHOUT_HUMIDIFIER then
+          -- Can cool to increase RH
+          kamra_hutes_tiltas = false
+        else
+          -- At minimum temp - block cooling
+          kamra_hutes_tiltas = true
+        end
+      else
+        -- AH is acceptable - check if heating would drop it below target
+        -- Calculate what AH would be at target temperature
+        local ah_at_target_temp = chamber_ah  -- AH stays constant during heating
+
+        -- If heating to target would keep AH above target, allow heating
+        if ah_at_target_temp >= target_ah then
+          -- Safe to heat - won't over-dry
+          kamra_para_futes_tiltas = false
+        else
+          -- Heating would drop below target AH - limit heating
+          kamra_para_futes_tiltas = true
+        end
+      end
     end
   else
     kamra_humidification = false
