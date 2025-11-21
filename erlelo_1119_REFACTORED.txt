@@ -487,7 +487,14 @@ function CustomDevice:controlling()
   warm = warm_1 and (not signal.sleep)
 
   cool = not(kamra_hutes_tiltas) and (kamra_hutes or befujt_hutes or kamra_para_hutes)
-  local cool_rel = cool and (not signal.sleep) and signal.sum_wint_jel
+
+  -- WATER COOLING LOGIC: Summer mode OR winter backup
+  -- In winter mode, use water cooling as backup if outdoor air temp difference <= 3°C
+  local outdoor_temp_diff = math.abs(kulso_homerseklet - kamra_homerseklet)
+  local outdoor_not_effective = outdoor_temp_diff <= 30  -- 3.0°C in int*10
+  local use_water_cooling = signal.sum_wint_jel or (not signal.sum_wint_jel and outdoor_not_effective)
+
+  local cool_rel = cool and (not signal.sleep) and use_water_cooling
 
   warm_dis = kamra_para_futes_tiltas or futes_tiltas
   dehumi = kamra_para_hutes  or befujt_para_hutes
