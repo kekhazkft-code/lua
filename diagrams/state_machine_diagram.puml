@@ -1,0 +1,288 @@
+@startuml Control State Machine
+!theme plain
+
+title Climate Control System - State Machine
+
+[*] --> Initialization
+
+state Initialization {
+    [*] --> DeviceSetup
+    DeviceSetup : Initialize variables
+    DeviceSetup : Reset error counters
+    DeviceSetup : Turn off all relays
+    DeviceSetup --> SensorValidation
+    
+    SensorValidation : Validate sensors
+    SensorValidation : Check communication
+    SensorValidation : Initialize tables
+    SensorValidation --> Ready : All OK
+    SensorValidation --> Error : Validation Failed
+}
+
+state Ready {
+    [*] --> Online
+    Online --> Monitoring
+}
+
+state Monitoring {
+    [*] --> DataAcquisition
+    
+    state DataAcquisition {
+        [*] --> ReadSensors
+        ReadSensors --> FilterData
+        FilterData --> ValidateData
+        ValidateData --> StoreData : Valid
+        ValidateData --> ErrorDetection : Invalid
+        StoreData --> [*]
+    }
+    
+    DataAcquisition --> Calculation : Data Ready
+}
+
+state Calculation {
+    [*] --> PsychrometricCalc
+    
+    PsychrometricCalc : Calculate dew point
+    PsychrometricCalc : Calculate abs. humidity
+    PsychrometricCalc : Evaluate outdoor air benefit
+    
+    PsychrometricCalc --> ControlDecision
+    
+    state ControlDecision {
+        [*] --> EvaluateTemperature
+        
+        state EvaluateTemperature {
+            [*] --> CheckTemp
+            CheckTemp --> TooHot : T > Target + Δ
+            CheckTemp --> TooCold : T < Target - Δ
+            CheckTemp --> TempOK : Within Range
+        }
+        
+        EvaluateTemperature --> EvaluateHumidity
+        
+        state EvaluateHumidity {
+            [*] --> CheckHumidity
+            CheckHumidity --> TooHumid : RH > Target + Δ
+            CheckHumidity --> TooDry : RH < Target - Δ
+            CheckHumidity --> HumidityOK : Within Range
+        }
+        
+        EvaluateHumidity --> EvaluateVentilation
+        
+        state EvaluateVentilation {
+            [*] --> CheckOutdoorAir
+            CheckOutdoorAir --> BeneficialAir : ΔT or ΔRH helpful
+            CheckOutdoorAir --> NormalAir : No benefit
+        }
+        
+        EvaluateVentilation --> [*]
+    }
+    
+    ControlDecision --> ActuatorControl
+}
+
+state ActuatorControl {
+    [*] --> TemperatureControl
+    
+    state TemperatureControl {
+        [*] --> TempDecision
+        TempDecision --> Heating : TooCold
+        TempDecision --> Cooling : TooHot
+        TempDecision --> TempMaintain : TempOK
+        
+        state Heating {
+            [*] --> TurnOnHeating
+            TurnOnHeating : relay_warm = ON
+            TurnOnHeating : relay_cool = OFF
+            TurnOnHeating --> [*]
+        }
+        
+        state Cooling {
+            [*] --> TurnOnCooling
+            TurnOnCooling : relay_cool = ON
+            TurnOnCooling : relay_warm = OFF
+            TurnOnCooling --> [*]
+        }
+        
+        state TempMaintain {
+            [*] --> TurnOffBoth
+            TurnOffBoth : relay_cool = OFF
+            TurnOffBoth : relay_warm = OFF
+            TurnOffBoth --> [*]
+        }
+    }
+    
+    TemperatureControl --> HumidityControl
+    
+    state HumidityControl {
+        [*] --> HumidityDecision
+        HumidityDecision --> Humidifying : TooDry
+        HumidityDecision --> Dehumidifying : TooHumid
+        HumidityDecision --> HumidityMaintain : HumidityOK
+        
+        state Humidifying {
+            [*] --> TurnOnHumidifier
+            TurnOnHumidifier : relay_humidifier = ON
+            TurnOnHumidifier --> [*]
+        }
+        
+        state Dehumidifying {
+            [*] --> OpenBypass
+            OpenBypass : relay_bypass_open = ON
+            OpenBypass : Increase air flow
+            OpenBypass --> [*]
+        }
+        
+        state HumidityMaintain {
+            [*] --> NormalVentilation
+            NormalVentilation : Standard air flow
+            NormalVentilation --> [*]
+        }
+    }
+    
+    HumidityControl --> VentilationControl
+    
+    state VentilationControl {
+        [*] --> AirDecision
+        AirDecision --> MaxOutdoorAir : BeneficialAir
+        AirDecision --> EnergySavingMode : NormalAir
+        
+        state MaxOutdoorAir {
+            [*] --> SetMaxAir
+            SetMaxAir : relay_add_air_max = ON
+            SetMaxAir : relay_add_air_save = OFF
+            SetMaxAir --> [*]
+        }
+        
+        state EnergySavingMode {
+            [*] --> SetSaveAir
+            SetSaveAir : relay_add_air_save = ON
+            SetSaveAir : relay_add_air_max = OFF
+            SetSaveAir --> [*]
+        }
+    }
+    
+    VentilationControl --> FanControl
+    
+    state FanControl {
+        [*] --> AdjustFanSpeed
+        AdjustFanSpeed : Calculate required speed
+        AdjustFanSpeed : relay_main_fan control
+        AdjustFanSpeed --> [*]
+    }
+    
+    FanControl --> [*]
+}
+
+ActuatorControl --> UpdateUI
+
+state UpdateUI {
+    [*] --> RefreshDisplays
+    RefreshDisplays : Update text elements
+    RefreshDisplays : Update statistics
+    RefreshDisplays : Store last values
+    RefreshDisplays --> [*]
+}
+
+UpdateUI --> WaitForNextCycle
+
+state WaitForNextCycle {
+    [*] --> CheckSleepMode
+    CheckSleepMode --> ActiveMode : Not in sleep
+    CheckSleepMode --> SleepMode : In rest period
+    
+    state SleepMode {
+        [*] --> ReducedOperation
+        ReducedOperation : relay_sleep = ON
+        ReducedOperation : Minimal control
+        ReducedOperation --> [*] : Sleep period ends
+    }
+    
+    state ActiveMode {
+        [*] --> NormalOperation
+        NormalOperation : Full control active
+        NormalOperation --> [*] : Poll timer expires
+    }
+}
+
+WaitForNextCycle --> Monitoring : Next cycle
+
+state Error {
+    [*] --> ErrorHandler
+    
+    state ErrorHandler {
+        [*] --> CheckErrorType
+        CheckErrorType --> SensorError : Sensor failure
+        CheckErrorType --> CommunicationError : Comm failure
+        CheckErrorType --> ValidationError : Data invalid
+        
+        state SensorError {
+            [*] --> IncrementErrorCounter
+            IncrementErrorCounter --> CheckThreshold
+            CheckThreshold --> Offline : Counter = 0
+            CheckThreshold --> RetryRead : Counter > 0
+            RetryRead --> [*]
+        }
+        
+        state CommunicationError {
+            [*] --> ResetCommunication
+            ResetCommunication --> RetryConnection
+            RetryConnection --> Online : Success
+            RetryConnection --> Offline : Failed
+        }
+        
+        state ValidationError {
+            [*] --> LogError
+            LogError --> UseLastValid
+            UseLastValid --> [*]
+        }
+    }
+    
+    ErrorHandler --> Monitoring : Recovered
+}
+
+state Offline {
+    [*] --> SafeMode
+    SafeMode : Turn off critical relays
+    SafeMode : Set status = 'offline'
+    SafeMode : Log error
+    SafeMode --> AttemptRecovery
+    
+    AttemptRecovery : Retry connection
+    AttemptRecovery : Reset error counters
+    AttemptRecovery --> Online : Success
+    AttemptRecovery --> SafeMode : Failed
+}
+
+Error --> Offline : Critical Failure
+Offline --> Ready : Recovery Successful
+
+note right of Monitoring
+  **Cycle Time:**
+  Configurable poll interval
+  Typical: 1-5 seconds
+  
+  **Thresholds:**
+  - Temperature: ±0.2°C
+  - Humidity: ±0.3%
+end note
+
+note right of ActuatorControl
+  **Safety Interlocks:**
+  - Heating and cooling
+    cannot run simultaneously
+  - Fan must run when
+    heating or cooling active
+  - Bypass closes when
+    humidifier active
+end note
+
+note right of Error
+  **Error Counter:**
+  Initial value: 3
+  Decrements on each error
+  At 0: Go offline
+  Reset to 3 on recovery
+end note
+
+@enduml

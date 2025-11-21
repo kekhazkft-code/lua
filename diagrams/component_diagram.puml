@@ -1,0 +1,162 @@
+@startuml Component Diagram
+!theme plain
+skinparam componentStyle rectangle
+
+title Climate Control System - Component Relationships
+
+package "erlelo_1119.lua - Main Control" {
+    [CustomDevice Manager] as CDM
+    [Climate Controller] as CC
+    [Relay Manager] as RM
+    [Psychrometric Calculator] as PC
+    [Moving Average Filter] as MAF
+    
+    component "Event Handlers" {
+        [onInit]
+        [online]
+        [offline]
+        [onEvent]
+        [poll]
+    }
+    
+    component "Control Functions" {
+        [updateText]
+        [setrelay]
+        [evaluate_outdoor_air_benefit]
+    }
+    
+    component "Psychrometric Functions" {
+        [saturation_vapor_pressure]
+        [calculate_absolute_humidity]
+        [calculate_rh]
+        [calculate_temp_from_ah_and_rh]
+        [ah_dp_set]
+        [ah_dp_cel_szamol]
+        [ah_dp_befujt_szamol]
+    }
+}
+
+package "erlelo_1119b.lua - Sensor Init" {
+    [Device Validator] as DV
+    [Weight Manager] as WM
+    [Cycle Manager] as CM
+    
+    component "Utility Functions" {
+        [devcheck]
+        [devset]
+        [txtset]
+        [suly_check]
+        [suly_szamol]
+    }
+    
+    component "Simulation Control" {
+        [simul_off]
+        [pihenoido]
+    }
+}
+
+package "erlelo_1119c.lua - External Sensor" {
+    [Statistics Manager] as SM
+    [Polling Engine] as PE
+    [Text Updater] as TU
+    
+    component "Data Processing" {
+        [mozgoatlag]
+        [statpush]
+    }
+}
+
+package "erlelo_1119d.lua - Chamber Humidity" {
+    [Humidity Calculator] as HC
+    [Dew Point Engine] as DPE
+    [Simulation Engine] as SE
+    
+    component "Calculation Functions" {
+        [calc_dew_point]
+        [calc_ah_dp_to_values]
+        [szimulalt_hiba]
+        [szimulalt_kiir]
+    }
+}
+
+package "Shared Data Structures" {
+    database "Variables (1-45)" {
+        [Temperature Values]
+        [Humidity Values]
+        [Target Values]
+        [Measurement Tables]
+        [Error Counters]
+        [Cycle Variables]
+        [Weight Data]
+    }
+    
+    database "SBUS (52-66)" {
+        [relay_cool: 52]
+        [relay_sleep: 53]
+        [relay_warm: 60]
+        [relay_add_air_max: 61]
+        [relay_reventon: 62]
+        [relay_add_air_save: 63]
+        [relay_bypass_open: 64]
+        [relay_main_fan: 65]
+        [relay_humidifier: 66]
+    }
+}
+
+' Main Control Relationships
+CDM --> CC
+CC --> RM
+CC --> PC
+CC --> MAF
+[Event Handlers] --> CC
+[Control Functions] --> RM
+[Psychrometric Functions] --> PC
+
+' Sensor Init Relationships
+DV --> WM
+[Utility Functions] --> DV
+[Simulation Control] --> CM
+
+' External Sensor Relationships
+PE --> SM
+[Data Processing] --> SM
+TU --> SM
+
+' Chamber Humidity Relationships
+HC --> DPE
+HC --> SE
+[Calculation Functions] --> HC
+
+' Data Access
+CDM --> Variables
+CC --> Variables
+RM --> SBUS
+DV --> Variables
+WM --> Variables
+PE --> Variables
+HC --> Variables
+
+note right of Variables
+  **Variable Mapping:**
+  1-2: Chamber T/RH
+  3-4: Target T/RH
+  5-6: Supply Air Target
+  7-8: External T/RH
+  17-22: Measurement Tables
+  23-24: Current Supply Air
+  29-32: Error Counters
+  33-34: Constants & Signals
+  38: Cycle Variables
+  42: Absolute Humidity/Dew Point
+end note
+
+note right of SBUS
+  **Relay Control:**
+  52-53: Cooling & Sleep
+  60-66: Main Climate Control
+  - Heating
+  - Air Management
+  - Humidity Control
+end note
+
+@enduml
