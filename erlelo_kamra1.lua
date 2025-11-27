@@ -1,32 +1,51 @@
 --[[
-  ERLELO CHAMBER CONTROLLER
+  ERLELO CHAMBER CONTROLLER v2.4
   erlelo_kamra.lua
   
-  Purpose: Full climate control logic for one chamber
-  Configuration is read from variable[200] and variable[201]
-  Variable mapping is read from variable[138]
+  Humidity-Primary Control System
   
-  IMPORTANT: Set CHAMBER_ID below (1, 2, or 3) for each device instance
+  SETUP: Edit the configuration section below, then deploy to Sinum
   
-  Copy this file and change only CHAMBER_ID:
+  Copy this file for each chamber:
     erlelo_kamra1.lua -> CHAMBER_ID = 1
     erlelo_kamra2.lua -> CHAMBER_ID = 2
     erlelo_kamra3.lua -> CHAMBER_ID = 3
 ]]
 
 -- ============================================================================
--- CHAMBER IDENTIFICATION - CHANGE THIS FOR EACH CHAMBER
+-- USER CONFIGURATION - EDIT THESE VALUES
 -- ============================================================================
 
-local CHAMBER_ID = 1  -- <<< CHANGE THIS: 1, 2, or 3
+local CHAMBER_ID = 1  -- Chamber number: 1, 2, or 3
+
+-- After running erlelo_store, it will print the mapping variable ID
+-- Enter that ID here:
+local MAPPING_VAR_ID = nil  -- Set after running erlelo_store (e.g., 42)
+
+-- Modbus client IDs (from Sinum Modbus Client settings)
+local MODBUS_SUPPLY_CLIENT = nil   -- Supply air sensor Modbus Client ID
+local MODBUS_CHAMBER_CLIENT = nil  -- Chamber sensor Modbus Client ID
+
+-- SBUS device IDs (from Sinum SBUS settings)
+local SBUS_CONFIG = {
+  inp_humidity_save = nil,  -- Humidity save input
+  inp_sum_wint = nil,       -- Summer/winter input
+  inp_weight_1 = nil,       -- Weight sensor 1 input
+  inp_weight_2 = nil,       -- Weight sensor 2 input
+  rel_warm = nil,           -- Heating relay output
+  rel_cool = nil,           -- Cooling relay output
+  rel_add_air_max = nil,    -- Max air addition relay
+  rel_reventon = nil,       -- Reventon relay
+  rel_add_air_save = nil,   -- Air save relay
+  rel_bypass_open = nil,    -- Bypass open relay
+  rel_main_fan = nil,       -- Main fan relay
+  rel_humidifier = nil,     -- Humidifier relay
+  rel_sleep = nil,          -- Sleep mode relay
+}
 
 -- ============================================================================
--- CONFIGURATION INDICES
+-- END OF USER CONFIGURATION
 -- ============================================================================
-
-local CONFIG_VAR_ID = 138  -- Variable name mapping (JSON)
-local CONFIG_VAR = 200
-local CONTROL_VAR = 201
 
 -- ============================================================================
 -- VARIABLE MAPPING SYSTEM
@@ -36,16 +55,33 @@ local VAR_MAP = nil
 
 local function loadVarMap()
   if VAR_MAP then return VAR_MAP end
-  local json = variable[CONFIG_VAR_ID]:getValue()
-  if not json then
-    print("ERROR: Variable mapping not found at index " .. CONFIG_VAR_ID)
+  
+  if not MAPPING_VAR_ID then
+    print("ERROR: MAPPING_VAR_ID not set!")
+    print("Run erlelo_store first, then set MAPPING_VAR_ID in this file.")
     return nil
   end
-  VAR_MAP = JSON:decode(json)
+  
+  local json = variable[MAPPING_VAR_ID]:getValue()
+  if not json or json == "" or json == "{}" then
+    print("ERROR: Variable mapping empty at ID " .. MAPPING_VAR_ID)
+    print("Run erlelo_store to build the mapping.")
+    return nil
+  end
+  
+  local ok, parsed = pcall(function() return JSON:decode(json) end)
+  if not ok or not parsed then
+    print("ERROR: Failed to parse variable mapping JSON")
+    return nil
+  end
+  
+  VAR_MAP = parsed
   return VAR_MAP
 end
 
--- Get variable by name (with chamber ID suffix for chamber-specific vars)
+-- Get variable by name (with appropriate suffix)
+-- Chamber-specific variables: name_ch1, name_ch2, name_ch3
+-- Global variables: name_glbl (outdoor, mapping)
 local function V(name)
   local map = loadVarMap()
   if not map then
@@ -53,30 +89,41 @@ local function V(name)
     return nil
   end
   
-  -- Add chamber suffix for chamber-specific variables
+  -- First try chamber-specific suffix
   local var_name = name .. "_ch" .. CHAMBER_ID
   local idx = map[var_name]
   
-  -- If not found with chamber suffix, try without (for shared variables)
+  -- If not found, try global suffix
   if not idx then
-    idx = map[name]
+    var_name = name .. "_glbl"
+    idx = map[var_name]
   end
   
   if not idx then
-    print("WARNING: Variable '" .. name .. "' (or '" .. var_name .. "') not found in mapping")
+    print("WARNING: Variable '" .. name .. "' not found (tried _ch" .. CHAMBER_ID .. " and _glbl)")
     return nil
   end
   
   return variable[idx]
 end
 
+-- Get table value from a variable (handles JSON string parsing)
+local function getTableValue(var)
+  if not var then return {} end
+  local val = var:getValue()
+  if not val then return {} end
+  if type(val) == "table" then return val end
+  if type(val) == "string" and val ~= "" and val ~= "{}" then
+    local ok, parsed = pcall(function() return JSON:decode(val) end)
+    if ok and parsed then return parsed end
+  end
+  return {}
+end
+
 -- ============================================================================
 -- LOCAL STATE
 -- ============================================================================
 
-local config = nil        -- Hardware config from variable[200]
-local control = nil       -- Control params from variable[201]
-local hw_config = nil     -- This chamber's hardware config
 local HW = {}             -- Hardware (SBUS) shortcuts
 local mb_supply = nil     -- Modbus client for supply air
 local mb_chamber = nil    -- Modbus client for chamber
@@ -84,9 +131,10 @@ local poll_timer = nil
 local inside_supply_deadzone = false  -- Deadzone state for hysteresis adjustment
 
 -- ============================================================================
--- STATISTICS CONFIGURATION
+-- TIMING CONFIGURATION
 -- ============================================================================
 
+local POLL_INTERVAL = 1000      -- Poll sensors every 1000ms (1 second)
 local STATS_INTERVAL = 30       -- Record stats every 30 poll cycles (~30 seconds)
 local SUPPLY_WARMUP_TIME = 120  -- Wait 120 seconds after active starts before collecting supply data
 local stats_counter = 0         -- Counter for statistics timing
@@ -203,7 +251,7 @@ local function record_statistics()
   local cycle_var = V('cycle_variable')
   local is_aktiv = true  -- Default to aktív if no cycle data
   if cycle_var then
-    local cycle = cycle_var:getValue() or {}
+    local cycle = getTableValue(cycle_var)
     is_aktiv = cycle.aktiv ~= false  -- aktiv unless explicitly false
   end
   
@@ -467,7 +515,7 @@ local function refresh_ui(device)
   
   -- Outdoor dew point
   if kulso_ah_dp then
-    local data = kulso_ah_dp:getValue() or {}
+    local data = getTableValue(kulso_ah_dp)
     if data.dp then
       updateElement('dp_kulso_tx', string.format("HP: %.1f°C", data.dp))
     end
@@ -485,7 +533,7 @@ local function refresh_ui(device)
   end
   
   if kulso_ah_dp then
-    local data = kulso_ah_dp:getValue() or {}
+    local data = getTableValue(kulso_ah_dp)
     if data.ah then
       updateElement('ah_kulso_tx', string.format("AH: %.3fg/m³", data.ah))
     end
@@ -493,7 +541,7 @@ local function refresh_ui(device)
   
   -- Control status indicators
   if signals_var then
-    local signals = signals_var:getValue() or {}
+    local signals = getTableValue(signals_var)
     
     -- Heating/Cooling status
     if signals.kamra_futes then
@@ -548,7 +596,7 @@ local function update_supply_psychrometric()
   local ah_dp_var = V('ah_dp_table')
   if not ah_dp_var then return end
   
-  local data = ah_dp_var:getValue() or {}
+  local data = getTableValue(ah_dp_var)
   data.befujt_ah = math.floor(ah * 100) / 100
   data.befujt_dp = math.floor(dp * 10) / 10
   ah_dp_var:setValue(data, true)
@@ -574,7 +622,7 @@ local function update_chamber_psychrometric()
   local ah_dp_var = V('ah_dp_table')
   if not ah_dp_var then return end
   
-  local data = ah_dp_var:getValue() or {}
+  local data = getTableValue(ah_dp_var)
   data.kamra_ah = math.floor(ah * 100) / 100
   data.kamra_dp = math.floor(dp * 10) / 10
   ah_dp_var:setValue(data, true)
@@ -728,8 +776,8 @@ local function calculate_supply_targets()
   local kamra_hom = kamra_hom_var:getValue() or 0
   local kamra_para = kamra_para_var:getValue() or 0
   local kulso_hom = kulso_temp:getValue() or 0
-  local kulso_data = kulso_ah_dp:getValue() or {}
-  local const = constansok:getValue() or {}
+  local kulso_data = getTableValue(kulso_ah_dp)
+  local const = getTableValue(constansok)
   
   if kamra_cel_hom == 0 or kamra_cel_para == 0 then return end
   
@@ -889,9 +937,9 @@ function run_control_cycle()
   local befujt_cel_para = befujt_cel_para_var and befujt_cel_para_var:getValue() or 0
   local kulso_hom = kulso_hom_var and kulso_hom_var:getValue() or 0
   local kulso_para = kulso_para_var and kulso_para_var:getValue() or 0
-  local old_signals = signals_var:getValue() or {}
-  local cycle = cycle_var and cycle_var:getValue() or {}
-  local const = constansok_var and constansok_var:getValue() or {}
+  local old_signals = getTableValue(signals_var)
+  local cycle = getTableValue(cycle_var)
+  local const = getTableValue(constansok_var)
   
   -- Error state fallback: use target as measured value (safe operation)
   if kamra_hibaflag then
@@ -1130,7 +1178,7 @@ local function advance_sleep_cycle()
   
   if not cycle_var or not signals_var then return end
   
-  local cycle = cycle_var:getValue() or {}
+  local cycle = getTableValue(cycle_var)
   
   if cycle.vez_aktiv then
     return  -- Manual control active
@@ -1152,7 +1200,7 @@ local function advance_sleep_cycle()
   end
   
   -- Update sleep signal if changed
-  local old_signals = signals_var:getValue() or {}
+  local old_signals = getTableValue(signals_var)
   if old_signals.sleep ~= (not cycle.aktiv) then
     old_signals.sleep = not cycle.aktiv
     signals_var:setValue(old_signals, false)
@@ -1166,21 +1214,20 @@ end
 -- ============================================================================
 
 local function init_hardware_shortcuts()
-  if not hw_config then return end
-  
-  HW.inp_humidity_save = sbus[hw_config.inp_humidity_save]
-  HW.inp_sum_wint = sbus[hw_config.inp_sum_wint]
-  HW.inp_weight_1 = sbus[hw_config.inp_weight_1]
-  HW.inp_weight_2 = sbus[hw_config.inp_weight_2]
-  HW.rel_warm = sbus[hw_config.rel_warm]
-  HW.rel_cool = sbus[hw_config.rel_cool]
-  HW.rel_add_air_max = sbus[hw_config.rel_add_air_max]
-  HW.rel_reventon = sbus[hw_config.rel_reventon]
-  HW.rel_add_air_save = sbus[hw_config.rel_add_air_save]
-  HW.rel_bypass_open = sbus[hw_config.rel_bypass_open]
-  HW.rel_main_fan = sbus[hw_config.rel_main_fan]
-  HW.rel_humidifier = sbus[hw_config.rel_humidifier]
-  HW.rel_sleep = sbus[hw_config.rel_sleep]
+  -- Use SBUS_CONFIG defined at top of file
+  HW.inp_humidity_save = SBUS_CONFIG.inp_humidity_save and sbus[SBUS_CONFIG.inp_humidity_save]
+  HW.inp_sum_wint = SBUS_CONFIG.inp_sum_wint and sbus[SBUS_CONFIG.inp_sum_wint]
+  HW.inp_weight_1 = SBUS_CONFIG.inp_weight_1 and sbus[SBUS_CONFIG.inp_weight_1]
+  HW.inp_weight_2 = SBUS_CONFIG.inp_weight_2 and sbus[SBUS_CONFIG.inp_weight_2]
+  HW.rel_warm = SBUS_CONFIG.rel_warm and sbus[SBUS_CONFIG.rel_warm]
+  HW.rel_cool = SBUS_CONFIG.rel_cool and sbus[SBUS_CONFIG.rel_cool]
+  HW.rel_add_air_max = SBUS_CONFIG.rel_add_air_max and sbus[SBUS_CONFIG.rel_add_air_max]
+  HW.rel_reventon = SBUS_CONFIG.rel_reventon and sbus[SBUS_CONFIG.rel_reventon]
+  HW.rel_add_air_save = SBUS_CONFIG.rel_add_air_save and sbus[SBUS_CONFIG.rel_add_air_save]
+  HW.rel_bypass_open = SBUS_CONFIG.rel_bypass_open and sbus[SBUS_CONFIG.rel_bypass_open]
+  HW.rel_main_fan = SBUS_CONFIG.rel_main_fan and sbus[SBUS_CONFIG.rel_main_fan]
+  HW.rel_humidifier = SBUS_CONFIG.rel_humidifier and sbus[SBUS_CONFIG.rel_humidifier]
+  HW.rel_sleep = SBUS_CONFIG.rel_sleep and sbus[SBUS_CONFIG.rel_sleep]
 end
 
 -- ============================================================================
@@ -1188,63 +1235,64 @@ end
 -- ============================================================================
 
 function CustomDevice:onInit()
-  print("=== ERLELO CHAMBER CONTROLLER: Kamra " .. CHAMBER_ID .. " ===")
+  print("=== ERLELO CHAMBER " .. CHAMBER_ID .. " v2.4 ===")
+  print("Humidity-Primary Control")
+  
+  -- Check required configuration
+  if not MAPPING_VAR_ID then
+    print("ERROR: MAPPING_VAR_ID not set!")
+    print("1. Run erlelo_store first")
+    print("2. Note the printed variable ID")
+    print("3. Set MAPPING_VAR_ID at top of this file")
+    return
+  end
   
   -- Load variable mapping
   local map = loadVarMap()
   if not map then
-    print("ERROR: Failed to load variable mapping from variable[" .. CONFIG_VAR_ID .. "]")
-    print("Please run erlelo_config.lua first.")
+    print("ERROR: Failed to load variable mapping")
     return
   end
-  print("Variable mapping loaded successfully")
+  print("Variable mapping loaded: " .. (VAR_MAP and "OK" or "FAIL"))
   
-  -- Load configuration from shared variables
-  config = variable[CONFIG_VAR]:getValue()
-  control = variable[CONTROL_VAR]:getValue()
-  
-  if not config or not control then
-    print("ERROR: Configuration not found!")
-    print("Please run erlelo_config.lua first.")
-    return
-  end
-  
-  -- Get this chamber's hardware config
-  hw_config = config["chamber_" .. CHAMBER_ID]
-  if not hw_config then
-    print("ERROR: No configuration for chamber " .. CHAMBER_ID)
-    return
-  end
-  
-  -- Initialize hardware shortcuts
+  -- Initialize hardware shortcuts from SBUS_CONFIG
   init_hardware_shortcuts()
+  print("SBUS hardware initialized")
   
   -- Get Modbus clients
-  local mb_cfg = config.modbus["chamber_" .. CHAMBER_ID]
-  mb_supply = modbus_client[mb_cfg.supply_client_id]
-  mb_chamber = modbus_client[mb_cfg.chamber_client_id]
-  
-  if mb_supply then
-    mb_supply:onRegisterAsyncRead(handle_supply_response)
-    mb_supply:onAsyncRequestFailure(handle_supply_error)
-    print("Supply air Modbus client initialized: " .. mb_cfg.supply_client_id)
+  if MODBUS_SUPPLY_CLIENT then
+    mb_supply = modbus_client[MODBUS_SUPPLY_CLIENT]
+    if mb_supply then
+      mb_supply:onRegisterAsyncRead(handle_supply_response)
+      mb_supply:onAsyncRequestFailure(handle_supply_error)
+      print("Supply Modbus client: " .. MODBUS_SUPPLY_CLIENT)
+    else
+      print("WARNING: Supply Modbus client " .. MODBUS_SUPPLY_CLIENT .. " not found")
+    end
   end
   
-  if mb_chamber then
-    mb_chamber:onRegisterAsyncRead(handle_chamber_response)
-    mb_chamber:onAsyncRequestFailure(handle_chamber_error)
-    print("Chamber Modbus client initialized: " .. mb_cfg.chamber_client_id)
+  if MODBUS_CHAMBER_CLIENT then
+    mb_chamber = modbus_client[MODBUS_CHAMBER_CLIENT]
+    if mb_chamber then
+      mb_chamber:onRegisterAsyncRead(handle_chamber_response)
+      mb_chamber:onAsyncRequestFailure(handle_chamber_error)
+      print("Chamber Modbus client: " .. MODBUS_CHAMBER_CLIENT)
+    else
+      print("WARNING: Chamber Modbus client " .. MODBUS_CHAMBER_CLIENT .. " not found")
+    end
   end
   
-  -- Get timer
+  -- Get timer and start polling
   poll_timer = self:getComponent("timer")
   
-  -- Start with staggered offset
-  local offset = control.poll_offset_step * CHAMBER_ID
+  -- Start with staggered offset based on chamber ID
+  local poll_offset = 500 * CHAMBER_ID  -- 500ms, 1000ms, 1500ms for chambers 1,2,3
   if poll_timer then
-    poll_timer:start(offset)
-    print("Polling will start in " .. offset .. "ms")
+    poll_timer:start(poll_offset)
+    print("Polling starts in " .. poll_offset .. "ms")
   end
+  
+  print("=== Chamber " .. CHAMBER_ID .. " initialization complete ===")
 end
 
 function CustomDevice:onEvent(event)
@@ -1262,8 +1310,8 @@ function CustomDevice:onEvent(event)
       print("STATS: Recorded statistics and refreshed UI for chamber " .. CHAMBER_ID)
     end
     
-    if poll_timer and control then
-      poll_timer:start(control.poll_interval)
+    if poll_timer then
+      poll_timer:start(POLL_INTERVAL)
     end
     return
   end
@@ -1332,14 +1380,14 @@ function CustomDevice:onSleepManualToggle(newValue, element)
   local signals_var = V('signals')
   
   if cycle_var then
-    local cycle = cycle_var:getValue() or {}
+    local cycle = getTableValue(cycle_var)
     cycle.vez_aktiv = true
     cycle.aktiv = not newValue
     cycle_var:setValue(cycle, true)
   end
   
   if signals_var then
-    local signals = signals_var:getValue() or {}
+    local signals = getTableValue(signals_var)
     signals.sleep = newValue
     signals_var:setValue(signals, false)
   end
@@ -1348,7 +1396,7 @@ end
 function CustomDevice:onSleepAutoEnable(newValue, element)
   local cycle_var = V('cycle_variable')
   if cycle_var then
-    local cycle = cycle_var:getValue() or {}
+    local cycle = getTableValue(cycle_var)
     cycle.vez_aktiv = not newValue
     cycle_var:setValue(cycle, true)
   end

@@ -1,0 +1,343 @@
+# Erlelo Control Logic - Scenario Analysis Report v2.4
+# Generated: November 2024
+# HUMIDITY-PRIMARY CONTROL - "Better cold than dry"
+# Target: 15.0°C, 75.0% RH | AH Deadzone: ±5% | Outdoor threshold: 5.0°C
+#
+# ⚠️ NON-NEGOTIABLE TEMPERATURE LIMIT:
+# If chamber temp > target + hysteresis (16°C) → MUST COOL (water or outdoor air)
+# This is independent of humidity mode - hard safety limit!
+
+================================================================================
+                              EXECUTIVE SUMMARY
+================================================================================
+
+## HUMIDITY-PRIMARY Control Philosophy
+The system prioritizes HUMIDITY over temperature because:
+  - Too dry → IRREVERSIBLE product damage (surface cracking, case hardening)
+  - Too humid → Mold risk, critical to address quickly
+  - Too cold → Just slows process, FULLY RECOVERABLE
+  - Product equilibrium depends on Absolute Humidity (AH), not temperature
+
+## Test Parameters
+- Chamber Temperature Range: 10°C to 22°C (step 3°C)
+- Chamber Humidity Range: 50% to 80% RH (step 10%)
+- Outdoor Temperature Range: -5°C to 25°C (step 5°C)
+- Target: 15.0°C, 75.0% RH (AH = 9.61 g/m³)
+- AH Deadzone: 0.48 g/m³ (5% of target)
+- Humidifier Start AH: 8.97 g/m³ (70% RH at 15°C)
+- Dehumi Threshold AH: 9.80 g/m³ (+2% hysteresis)
+- Total Scenarios Tested: 140
+
+## Control Modes Summary (HUMIDITY-PRIMARY)
+┌─────────────┬───────┬─────────────────────────────────────────────────────┐
+│ Mode        │ Count │ Condition                                           │
+├─────────────┼───────┼─────────────────────────────────────────────────────┤
+│ AGGRESSIVE  │  119  │ AH error > 5% of target (humidity out of range) │
+│ FINE        │   21  │ AH error ≤ 5% of target (humidity OK, tune temp)  │
+└─────────────┴───────┴─────────────────────────────────────────────────────┘
+
+## Control Actions Summary
+┌─────────────────────┬───────┬─────────────────────────────────────────┐
+│ Action              │ Count │ Conditions                              │
+├─────────────────────┼───────┼─────────────────────────────────────────┤
+│ Cooling needed      │   56  │ Chamber > 16°C                          │
+│ Heating needed      │   56  │ Chamber < 14°C                          │
+│ Dehumidification    │   42  │ AH > 9.80 g/m³                          │
+│ Humidification      │   70  │ AH < 8.97 g/m³ (start threshold)        │
+│ Outdoor air used    │   13  │ Cool only + chamber-outdoor ≥ 5°C       │
+│ Water cooling used  │   50  │ Dehumi OR (cool + outdoor not helpful)  │
+│ Dehumi + Heat combo │    0  │ Cold chamber + very high humidity       │
+└─────────────────────┴───────┴─────────────────────────────────────────┘
+
+## Key Relay States by Scenario
+┌────────────────────────┬──────┬──────┬─────┬─────┬───────┬─────────────────────────┐
+│ Scenario               │ COOL │ WARM │ AIR │ BYP │ HUMID │ Example                 │
+├────────────────────────┼──────┼──────┼─────┼─────┼───────┼─────────────────────────┤
+│ Heating + Humidify     │ OFF  │  ON  │ OFF │ OFF │  ON   │ 10°C, 50% RH (dry!)     │
+│ Cooling only (water)   │  ON  │ OFF  │ OFF │  ON │ OFF   │ 19°C, 50% RH, out 15°C  │
+│ Cooling (outdoor air)  │ OFF  │ OFF  │  ON │  ON │ OFF   │ 19°C, 50% RH, out 5°C   │
+│ Dehumidify only        │  ON  │ OFF  │ OFF │ OFF │ OFF   │ 16°C, 80% RH            │
+│ Dehumidify + Cool      │  ON  │ OFF  │ OFF │ OFF │ OFF   │ 19°C, 70% RH            │
+│ Dehumidify + Heat      │  ON  │  ON  │ OFF │ OFF │ OFF   │ 13°C, 88% RH            │
+│ Humidify only          │ OFF  │ OFF  │ OFF │ OFF │  ON   │ 16°C, 60% RH            │
+└────────────────────────┴──────┴──────┴─────┴─────┴───────┴─────────────────────────┘
+
+* Humidifier ON depends on has_humidifier=true for the chamber
+
+================================================================================
+                         DETAILED SCENARIO MATRIX
+================================================================================
+
+Chamber │ Chamber │ Outdoor │ AH curr │ AH err% │ Mode       │ cool │dehumi│ warm │humid │ OutBen │ Relays: COOL WARM AIR  BYP  HUM
+  °C    │   RH%   │   °C    │  g/m³   │         │            │      │      │      │      │        │
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   10   │    50   │     -5   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    50   │      0   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    50   │      5   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    50   │     10   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    50   │     15   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    50   │     20   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    50   │     25   │    4.70  │    51%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │     -5   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │      0   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │      5   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │     10   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │     15   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │     20   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    60   │     25   │    5.64  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │     -5   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │      0   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │      5   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │     10   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │     15   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │     20   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    70   │     25   │    6.57  │    32%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │     -5   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │      0   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │      5   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │     10   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │     15   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │     20   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   10   │    80   │     25   │    7.51  │    22%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   13   │    50   │     -5   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    50   │      0   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    50   │      5   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    50   │     10   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    50   │     15   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    50   │     20   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    50   │     25   │    5.67  │    41%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │     -5   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │      0   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │      5   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │     10   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │     15   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │     20   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    60   │     25   │    6.80  │    29%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │     -5   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │      0   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │      5   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │     10   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │     15   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │     20   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    70   │     25   │    7.93  │    17%   │ AGGRESSIVE │      │      │  ✓  │  ✓  │       │ OFF   ON  OFF  OFF   ON
+   13   │    80   │     -5   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+   13   │    80   │      0   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+   13   │    80   │      5   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+   13   │    80   │     10   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+   13   │    80   │     15   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+   13   │    80   │     20   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+   13   │    80   │     25   │    9.07  │     6%   │ AGGRESSIVE │      │      │  ✓  │     │       │ OFF   ON  OFF  OFF  OFF
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   16   │    50   │     -5   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    50   │      0   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    50   │      5   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    50   │     10   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    50   │     15   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    50   │     20   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    50   │     25   │    6.81  │    29%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │     -5   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │      0   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │      5   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │     10   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │     15   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │     20   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    60   │     25   │    8.17  │    15%   │ AGGRESSIVE │      │      │     │  ✓  │       │ OFF  OFF  OFF  OFF   ON
+   16   │    70   │     -5   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    70   │      0   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    70   │      5   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    70   │     10   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    70   │     15   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    70   │     20   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    70   │     25   │    9.53  │     1%   │ FINE       │      │      │     │     │       │ OFF  OFF  OFF  OFF  OFF
+   16   │    80   │     -5   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   16   │    80   │      0   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   16   │    80   │      5   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   16   │    80   │     10   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   16   │    80   │     15   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   16   │    80   │     20   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   16   │    80   │     25   │   10.89  │    13%   │ AGGRESSIVE │      │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   19   │    50   │     -5   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │   ✓   │ OFF  OFF   ON   ON   ON
+   19   │    50   │      0   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │   ✓   │ OFF  OFF   ON   ON   ON
+   19   │    50   │      5   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │   ✓   │ OFF  OFF   ON   ON   ON
+   19   │    50   │     10   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │   ✓   │ OFF  OFF   ON   ON   ON
+   19   │    50   │     15   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │       │  ON  OFF  OFF   ON   ON
+   19   │    50   │     20   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │       │  ON  OFF  OFF   ON   ON
+   19   │    50   │     25   │    8.14  │    15%   │ AGGRESSIVE │   ✓  │      │     │  ✓  │       │  ON  OFF  OFF   ON   ON
+   19   │    60   │     -5   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   19   │    60   │      0   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   19   │    60   │      5   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   19   │    60   │     10   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   19   │    60   │     15   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │       │  ON  OFF  OFF   ON  OFF
+   19   │    60   │     20   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │       │  ON  OFF  OFF   ON  OFF
+   19   │    60   │     25   │    9.77  │     2%   │ FINE       │   ✓  │      │     │     │       │  ON  OFF  OFF   ON  OFF
+   19   │    70   │     -5   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    70   │      0   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    70   │      5   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    70   │     10   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    70   │     15   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    70   │     20   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    70   │     25   │   11.40  │    19%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │     -5   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │      0   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │      5   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │     10   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │     15   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │     20   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   19   │    80   │     25   │   13.03  │    36%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   22   │    50   │     -5   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   22   │    50   │      0   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   22   │    50   │      5   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   22   │    50   │     10   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   22   │    50   │     15   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │   ✓   │ OFF  OFF   ON   ON  OFF
+   22   │    50   │     20   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │       │  ON  OFF  OFF   ON  OFF
+   22   │    50   │     25   │    9.70  │     1%   │ FINE       │   ✓  │      │     │     │       │  ON  OFF  OFF   ON  OFF
+   22   │    60   │     -5   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    60   │      0   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    60   │      5   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    60   │     10   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    60   │     15   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    60   │     20   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    60   │     25   │   11.64  │    21%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │     -5   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │      0   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │      5   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │     10   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │     15   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │     20   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    70   │     25   │   13.58  │    41%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │     -5   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │      0   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │      5   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │     10   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │     15   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │     20   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+   22   │    80   │     25   │   15.52  │    62%   │ AGGRESSIVE │   ✓  │  ✓   │     │     │       │  ON  OFF  OFF  OFF  OFF
+
+Legend:
+  AH err% = Percentage error from target AH (9.61 g/m³)
+  Mode = AGGRESSIVE when AH error > 5%, FINE when AH error ≤ 5%
+  cool   = Temperature above target + hysteresis (needs cooling)
+  dehumi = Absolute humidity above target + hysteresis (needs dehumidification)
+  warm   = Temperature below target - hysteresis (needs heating)
+  humid  = Absolute humidity below start threshold (needs humidification)
+  OutBen = Outdoor air beneficial for cooling (temp diff >= 5°C, not dehumidifying)
+
+Relays:
+  COOL = Water cooling valve (0°C for dehumi, 8°C for cooling only)
+  WARM = Heater relay
+  AIR  = Outdoor air damper
+  BYP  = Bypass (ON for cooling only, OFF for dehumidification)
+  HUM  = Humidifier relay (if has_humidifier=true for chamber)
+
+================================================================================
+                    HUMIDITY-PRIMARY MODE ANALYSIS
+================================================================================
+
+Key insight: Mode is determined by HUMIDITY (AH), not temperature!
+AH deadzone: 0.48 g/m³ (5% of target 9.61 g/m³)
+AH range for FINE mode: 9.13 to 10.09 g/m³
+
+┌─────────┬─────────┬───────────┬──────────┬────────────┬─────────────────────────────────┐
+│ Chamber │ RH%     │ AH g/m³   │ AH Error │ Mode       │ Why                             │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│    10°C │    50%  │    4.70   │    51%   │ AGGRESSIVE │ Too DRY! 51% below target       │
+│    10°C │    80%  │    7.51   │    22%   │ AGGRESSIVE │ Too DRY! 22% below target       │
+│    13°C │    70%  │    7.93   │    17%   │ AGGRESSIVE │ Too DRY! 17% below target       │
+│    15°C │    72%  │    9.23   │     4%   │ FINE       │ AH within ±5% → fine-tune temp  │
+│    15°C │    75%  │    9.61   │     0%   │ FINE       │ AH within ±5% → fine-tune temp  │
+│    16°C │    70%  │    9.53   │     1%   │ FINE       │ AH within ±5% → fine-tune temp  │
+│    19°C │    50%  │    8.14   │    15%   │ AGGRESSIVE │ Too DRY! 15% below target       │
+│    19°C │    60%  │    9.77   │     2%   │ FINE       │ AH within ±5% → fine-tune temp  │
+│    22°C │    50%  │    9.70   │     1%   │ FINE       │ AH within ±5% → fine-tune temp  │
+└─────────┴─────────┴───────────┴──────────┴────────────┴─────────────────────────────────┘
+
+Key observations:
+  - At 22°C/50% RH: AH is 9.70 g/m³, only 1% above target → FINE mode!
+  - At 10°C/80% RH: AH is 7.51 g/m³, 22% below target → AGGRESSIVE mode!
+  - Temperature alone doesn't determine mode - HUMIDITY does!
+
+================================================================================
+                    RH THRESHOLD FOR HUMIDIFIER BY TEMPERATURE
+================================================================================
+
+At each temperature, what RH triggers humidifier ON/OFF?
+(Based on AH comparison to target AH = 9.61 g/m³ and start AH = 8.97 g/m³)
+
+┌────────┬─────────────────┬─────────────────┬─────────────────────────────────┐
+│ Temp   │ Turn ON below   │ Turn OFF above  │ Notes                           │
+├────────┼─────────────────┼─────────────────┼─────────────────────────────────┤
+│   10°C │         < 95.5% │          > 100% │ Cold: higher RH needed          │
+│   11°C │         < 89.7% │        >= 96.1% │ Cold: higher RH needed          │
+│   12°C │         < 84.2% │        >= 90.2% │ Cold: higher RH needed          │
+│   13°C │         < 79.1% │        >= 84.8% │ Cold: higher RH needed          │
+│   14°C │         < 74.4% │        >= 79.7% │ Cold: higher RH needed          │
+│   15°C │         < 70.0% │        >= 75.0% │ AT TARGET TEMP                  │
+│   16°C │         < 65.9% │        >= 70.6% │ Warm: lower RH threshold        │
+│   17°C │         < 62.0% │        >= 66.5% │ Warm: lower RH threshold        │
+│   18°C │         < 58.4% │        >= 62.6% │ Warm: lower RH threshold        │
+│   19°C │         < 55.1% │        >= 59.0% │ Warm: lower RH threshold        │
+│   20°C │         < 51.9% │        >= 55.6% │ Warm: lower RH threshold        │
+│   21°C │         < 49.0% │        >= 52.5% │ Warm: lower RH threshold        │
+│   22°C │         < 46.2% │        >= 49.5% │ Warm: lower RH threshold        │
+└────────┴─────────────────┴─────────────────┴─────────────────────────────────┘
+
+================================================================================
+                    RH THRESHOLD FOR DEHUMIDIFICATION BY TEMPERATURE
+================================================================================
+
+At each temperature, what RH triggers dehumidification?
+(Based on AH comparison to dehumi threshold = 9.80 g/m³)
+
+┌────────┬───────────────────┬─────────────────────────────────────────────────┐
+│ Temp   │ Dehumi ON above   │ Notes                                           │
+├────────┼───────────────────┼─────────────────────────────────────────────────┤
+│   10°C │            > 100% │ Impossible - cold air can't hold enough moisture │
+│   11°C │           > 98.0% │ Very high RH needed at cold temps               │
+│   12°C │           > 92.0% │ Very high RH needed at cold temps               │
+│   13°C │           > 86.5% │ Very high RH needed at cold temps               │
+│   14°C │           > 81.3% │ Very high RH needed at cold temps               │
+│   15°C │           > 76.5% │ At target temp - threshold ≈ target RH + hysteresis │
+│   16°C │           > 72.0% │ Lower RH triggers dehumi when warm              │
+│   17°C │           > 67.8% │ Lower RH triggers dehumi when warm              │
+│   18°C │           > 63.9% │ Lower RH triggers dehumi when warm              │
+│   19°C │           > 60.2% │ Lower RH triggers dehumi when warm              │
+│   20°C │           > 56.8% │ Lower RH triggers dehumi when warm              │
+│   21°C │           > 53.5% │ Lower RH triggers dehumi when warm              │
+│   22°C │           > 50.5% │ Lower RH triggers dehumi when warm              │
+└────────┴───────────────────┴─────────────────────────────────────────────────┘
+
+================================================================================
+                           VALIDATION CHECKLIST
+================================================================================
+
+✓ HUMIDITY-PRIMARY deadzone working:
+  - FINE mode when AH within ±5% of target (9.13-10.09 g/m³)
+  - AGGRESSIVE mode when AH outside this range
+  - Mode determined by HUMIDITY, not temperature
+
+✓ Mode examples:
+  - 22°C/50% RH → AH 9.70 (1% above target) → FINE mode
+  - 10°C/80% RH → AH 7.51 (22% below target) → AGGRESSIVE mode
+  - 15°C/72% RH → AH 9.22 (4% below target) → FINE mode
+
+✓ Outdoor air for cooling only:
+  - Used at 19°C/50%RH when outdoor is cold (5°C or less)
+  - NOT used when dehumidifying (even if outdoor is cold)
+
+✓ Water at 0°C for dehumidification:
+  - Bypass OFF when dehumi active (16°C/80%RH, 19°C/70%RH)
+
+✓ Dehumi + Heat combination:
+  - Both COOL and WARM relays ON for cold humid conditions
+
+✓ Humidifier control:
+  - ON when AH < start threshold (8.97 g/m³)
+  - OFF when AH >= target (9.61 g/m³)
+  - Hysteresis prevents cycling
+
+================================================================================
+                              END OF REPORT
+================================================================================
