@@ -919,6 +919,14 @@ Humidifier Hysteresis:
 
 ---
 
-*Document Version: 2.3*
-*Generated from ERLELO v4 control logic*
-*Cross-checked against Erlelo_System_Documentation_v2.2.docx and SYSTEM_ARCHITECTURE.md*
+*Document Version: 2.4*
+*Generated from ERLELO v2.4 control logic*
+*Cross-checked against Erlelo_System_Documentation_v2.4.docx and SYSTEM_ARCHITECTURE.md*
+
+## v2.4 Changes (Configuration)
+- Explicit user configuration section in erlelo_kamra.lua
+- MAPPING_VAR_ID must be set after running erlelo_store
+- Modbus client IDs configurable (MODBUS_SUPPLY_CLIENT, MODBUS_CHAMBER_CLIENT)
+- SBUS device IDs now explicit in SBUS_CONFIG table
+- Better error handling for missing configuration
+- Control logic unchanged from v2.3 (humidity-primary deadzone)
