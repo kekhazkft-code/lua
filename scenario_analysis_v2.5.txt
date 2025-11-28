@@ -1,0 +1,655 @@
+# Erlelo Control Logic - Scenario Analysis Report v2.5
+# Generated: November 2024
+# HUMIDITY-PRIMARY CONTROL with DUAL-LAYER CASCADE - "Better cold than dry"
+# Target: 15.0°C, 75.0% RH | AH Deadzone: ±0.8 g/m³ (8.3%) | Outdoor threshold: 5.0°C
+#
+# ⚠️ NON-NEGOTIABLE TEMPERATURE LIMIT:
+# If chamber temp > target + deltahi (16.5°C) → MUST COOL (water or outdoor air)
+# This is independent of humidity mode - hard safety limit!
+#
+# v2.5 CHANGES: Added dual-layer cascade control with directional hysteresis
+#   - Chamber (outer loop): wider deadzone (0.8 g/m³), hysteresis (0.3 g/m³)
+#   - Supply (inner loop): tighter deadzone (0.5 g/m³), hysteresis (0.2 g/m³)
+#   - Fixed inverted supply temp thresholds (2.0→1.0°C, 1.5→1.0°C)
+#   - Chamber temp threshold: 16.5°C (was 16.0°C)
+#   - SAFE INITIALIZATION: 32-second startup with all relays OFF
+
+================================================================================
+                         v2.5 PARAMETER CHANGES
+================================================================================
+
+┌─────────────────────────────────────┬───────────┬───────────┬─────────────────┐
+│ Parameter                           │ v2.4      │ v2.5      │ Change          │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ HUMIDITY - CHAMBER (Outer Loop)     │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ ah_deadzone_kamra                   │ 50        │ 80        │ +60% wider      │
+│ (stored as 0.01 g/m³)               │ (0.5 g/m³)│ (0.8 g/m³)│                 │
+│                                     │           │           │                 │
+│ ah_hysteresis_kamra                 │ -         │ 30        │ NEW             │
+│ (stored as 0.01 g/m³)               │           │ (0.3 g/m³)│                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ HUMIDITY - SUPPLY (Inner Loop)      │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ ah_deadzone_befujt                  │ -         │ 50        │ NEW             │
+│ (stored as 0.01 g/m³)               │           │ (0.5 g/m³)│                 │
+│                                     │           │           │                 │
+│ ah_hysteresis_befujt                │ -         │ 20        │ NEW             │
+│ (stored as 0.01 g/m³)               │           │ (0.2 g/m³)│                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ TEMPERATURE - CHAMBER (Outer Loop)  │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ deltahi_kamra_homerseklet           │ 10        │ 15        │ +50% wider      │
+│ (stored as 0.1°C)                   │ (1.0°C)   │ (1.5°C)   │                 │
+│                                     │           │           │                 │
+│ deltalo_kamra_homerseklet           │ 10        │ 10        │ unchanged       │
+│ (stored as 0.1°C)                   │ (1.0°C)   │ (1.0°C)   │                 │
+│                                     │           │           │                 │
+│ temp_hysteresis_kamra               │ -         │ 5         │ NEW             │
+│ (stored as 0.1°C)                   │           │ (0.5°C)   │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ TEMPERATURE - SUPPLY (Inner Loop)   │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ deltahi_befujt_homerseklet          │ 20        │ 10        │ -50% TIGHTER    │
+│ (stored as 0.1°C)                   │ (2.0°C)   │ (1.0°C)   │ (was inverted!) │
+│                                     │           │           │                 │
+│ deltalo_befujt_homerseklet          │ 15        │ 10        │ -33% TIGHTER    │
+│ (stored as 0.1°C)                   │ (1.5°C)   │ (1.0°C)   │ (was inverted!) │
+│                                     │           │           │                 │
+│ temp_hysteresis_befujt              │ -         │ 3         │ NEW             │
+│ (stored as 0.1°C)                   │           │ (0.3°C)   │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ INITIALIZATION                      │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ init_duration                       │ -         │ 32        │ NEW             │
+│ (seconds)                           │           │ (32s)     │ Safe startup    │
+└─────────────────────────────────────┴───────────┴───────────┴─────────────────┘
+
+CASCADE HIERARCHY VERIFICATION:
+  AH:   Chamber 1.9 g/m³ > Supply 1.2 g/m³  ✓ (ratio 1.58)
+  Temp: Chamber 3.0°C > Supply 2.3°C        ✓ (ratio 1.30)
+
+================================================================================
+                              EXECUTIVE SUMMARY
+================================================================================
+
+## HUMIDITY-PRIMARY Control Philosophy
+The system prioritizes HUMIDITY over temperature because:
+  - Too dry → IRREVERSIBLE product damage (surface cracking, case hardening)
+  - Too humid → Mold risk, critical to address quickly
+  - Too cold → Just slows process, FULLY RECOVERABLE
+  - Product equilibrium depends on Absolute Humidity (AH), not temperature
+
+## Test Parameters (v2.5)
+- Chamber Temperature Range: 10°C to 22°C (step 3°C)
+- Chamber Humidity Range: 50% to 80% RH (step 10%)
+- Outdoor Temperature Range: -5°C to 25°C (step 5°C)
+- Target: 15.0°C, 75.0% RH (AH = 9.61 g/m³)
+- AH Deadzone (Chamber): ±0.8 g/m³ (8.3% of target)
+- AH Hysteresis (Chamber): 0.3 g/m³
+- Humidifier Start AH: 8.81 g/m³ (target - deadzone)
+- Dehumi Threshold AH: 10.41 g/m³ (target + deadzone)
+- Initialization Period: 32 seconds (all relays OFF)
+- Total Scenarios Tested: 140
+
+## Control Modes Summary (v2.5 - HUMIDITY-PRIMARY)
+┌─────────────┬───────┬─────────────────────────────────────────────────────┐
+│ Mode        │ Count │ Condition                                           │
+├─────────────┼───────┼─────────────────────────────────────────────────────┤
+│ HUMID       │   35  │ AH > 10.41 g/m³ (dehumidification needed)           │
+│ FINE        │   42  │ AH 8.81-10.41 g/m³ (humidity OK, fine-tune temp)    │
+│ DRY         │   63  │ AH < 8.81 g/m³ (humidification needed)              │
+└─────────────┴───────┴─────────────────────────────────────────────────────┘
+
+## Control Actions Summary
+┌─────────────────────┬───────┬─────────────────────────────────────────┐
+│ Action              │ Count │ Conditions                              │
+├─────────────────────┼───────┼─────────────────────────────────────────┤
+│ Cooling needed      │   56  │ Chamber > 16.5°C (target + 1.5)         │
+│ Heating needed      │   56  │ Chamber < 14°C (target - 1.0)           │
+│ Dehumidification    │   35  │ AH > 10.41 g/m³ (wider deadzone)        │
+│ Humidification      │   63  │ AH < 8.81 g/m³ (wider deadzone)         │
+│ Outdoor air used    │   13  │ Cool only + chamber-outdoor ≥ 5°C       │
+│ Water cooling used  │   50  │ Dehumi OR (cool + outdoor not helpful)  │
+│ Dehumi + Heat combo │    7  │ Cold chamber + high humidity            │
+└─────────────────────┴───────┴─────────────────────────────────────────┘
+
+## Key Relay States by Scenario
+┌────────────────────────┬──────┬──────┬─────┬─────┬───────┬─────────────────────────┐
+│ Scenario               │ COOL │ WARM │ AIR │ BYP │ HUMID │ Example                 │
+├────────────────────────┼──────┼──────┼─────┼─────┼───────┼─────────────────────────┤
+│ INITIALIZATION         │ OFF  │ OFF  │ OFF │ OFF │ OFF   │ First 32s after reboot  │
+│ Heating + Humidify     │ OFF  │  ON  │ OFF │ OFF │  ON   │ 10°C, 50% RH (dry!)     │
+│ Cooling only (water)   │  ON  │ OFF  │ OFF │  ON │ OFF   │ 19°C, 50% RH, out 15°C  │
+│ Cooling (outdoor air)  │ OFF  │ OFF  │  ON │  ON │ OFF   │ 19°C, 50% RH, out 5°C   │
+│ Dehumidify only        │  ON  │ OFF  │ OFF │ OFF │ OFF   │ 16°C, 80% RH            │
+│ Dehumidify + Cool      │  ON  │ OFF  │ OFF │ OFF │ OFF   │ 19°C, 70% RH            │
+│ Dehumidify + Heat      │  ON  │  ON  │ OFF │ OFF │ OFF   │ 13°C, 88% RH            │
+│ Humidify only          │ OFF  │ OFF  │ OFF │ OFF │  ON   │ 16°C, 60% RH            │
+└────────────────────────┴──────┴──────┴─────┴─────┴───────┴─────────────────────────┘
+
+* Humidifier ON depends on has_humidifier=true for the chamber
+
+================================================================================
+                    SAFE INITIALIZATION BEHAVIOR
+================================================================================
+
+## Problem: Reboot Without Initialization
+
+When the SINUM controller reboots, all variables reset to default values (0).
+Without initialization protection:
+
+  REBOOT → Variables = 0 → Controller sees T=0°C, RH=0%
+                            ↓
+                         "EMERGENCY! Freezing and bone dry!"
+                            ↓
+                         relay_warm = ON, relay_humidifier = ON
+                            ↓
+                         POTENTIAL EQUIPMENT DAMAGE
+
+## Solution: 32-Second Safe Initialization
+
+┌────────┬─────────────┬─────────────┬────────────────────────────────────────┐
+│ Time   │ init_compl. │ Relays      │ Activity                               │
+├────────┼─────────────┼─────────────┼────────────────────────────────────────┤
+│ 0s     │ false       │ ALL OFF     │ Start reading sensors                  │
+│ 5s     │ false       │ ALL OFF     │ Buffers filling (need 5 samples)       │
+│ 15s    │ false       │ ALL OFF     │ Valid AH/DP calculations               │
+│ 25s    │ false       │ ALL OFF     │ Humidity mode determined               │
+│ 32s    │ true        │ CONTROLLED  │ Normal operation begins                │
+└────────┴─────────────┴─────────────┴────────────────────────────────────────┘
+
+## Signals During Initialization
+
+{
+  "init_complete": false,
+  "init_countdown": 15,
+  "humidity_mode": 1,
+  "kamra_futes": true,      ← Control logic runs
+  "relay_warm": false       ← But relays stay OFF!
+}
+
+Note: Control logic runs normally during init (kamra_futes=true means "heating 
+requested"), but relay outputs are disabled (relay_warm=false) until init 
+completes. This allows buffers to fill and modes to stabilize.
+
+================================================================================
+                    OUTDOOR AIR USAGE STRATEGY
+================================================================================
+
+**Outdoor air is used ONLY for cooling, NEVER for dehumidification**
+
+Outdoor air cannot remove moisture - dehumidification requires cold water coils
+for condensation. Bypass must be CLOSED during dehumidification.
+
+Decision logic:
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│  Need to cool?  ──NO──►  No outdoor air                                   │
+│       │                                                                    │
+│      YES                                                                   │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Need to dehumi?  ──YES──►  Water cooling ONLY (outdoor can't dehumi!)    │
+│       │                                                                    │
+│       NO                                                                   │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Outdoor ≥ 5°C cooler?  ──NO──►  Water cooling (outdoor not helpful)      │
+│       │                                                                    │
+│      YES                                                                   │
+│       │                                                                    │
+│       ▼                                                                    │
+│  USE OUTDOOR AIR (relay_add_air_max = ON, relay_cool = OFF)               │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Examples:
+  19°C chamber, 50% RH, outdoor 5°C  → Outdoor air (14°C advantage!)
+  19°C chamber, 50% RH, outdoor 15°C → Water cooling (only 4°C advantage)
+  19°C chamber, 70% RH, outdoor 0°C  → Water cooling (need to DEHUMI, bypass OFF)
+
+================================================================================
+                    DETAILED SCENARIO: SYSTEM REBOOT
+================================================================================
+
+### SCENARIO 0: System Reboot - Safe Initialization
+
+Conditions BEFORE reboot:
+- Chamber actual: 15°C, 75% RH (perfectly at target)
+- Outdoor: 10°C, 70% RH
+- All systems operating normally
+
+Conditions AFTER reboot (t=0):
+- All variables reset to 0
+- Chamber sensors show: T=0, RH=0
+- Control logic would see: AH=0 (DRY emergency!)
+
+Response WITHOUT initialization:
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TIME  │ SENSORS     │ CONTROL DECISION       │ RELAYS                  │
+├───────┼─────────────┼────────────────────────┼─────────────────────────┤
+│ 0s    │ T=0, RH=0   │ MODE_DRY, heat needed  │ relay_warm=ON (BAD!)    │
+│ 1s    │ T=5, RH=20  │ MODE_DRY, heat needed  │ relay_warm=ON           │
+│ 2s    │ T=10, RH=50 │ MODE_DRY, heat needed  │ relay_warm=ON           │
+│ ...   │ stabilizing │ ...                    │ ...                     │
+│ 5s    │ T=15, RH=75 │ MODE_FINE              │ relay_warm=OFF (finally)│
+└───────┴─────────────┴────────────────────────┴─────────────────────────┘
+PROBLEM: 5 seconds of unnecessary heating while sensors stabilize!
+
+Response WITH initialization (v2.5):
+┌─────────────────────────────────────────────────────────────────────────┐
+│ TIME  │ SENSORS     │ CONTROL DECISION       │ RELAYS                  │
+├───────┼─────────────┼────────────────────────┼─────────────────────────┤
+│ 0s    │ T=0, RH=0   │ MODE_DRY, heat needed  │ ALL OFF (init_complete  │
+│ 1s    │ T=5, RH=20  │ MODE_DRY, heat needed  │ =false, countdown=31)   │
+│ 5s    │ T=15, RH=75 │ MODE_FINE              │ ALL OFF (countdown=27)  │
+│ 15s   │ T=15, RH=75 │ MODE_FINE              │ ALL OFF (countdown=17)  │
+│ 32s   │ T=15, RH=75 │ MODE_FINE              │ NORMAL CONTROL          │
+│       │             │                        │ (init_complete=true)    │
+└───────┴─────────────┴────────────────────────┴─────────────────────────┘
+RESULT: No unnecessary relay activation during sensor stabilization!
+
+================================================================================
+                    DETAILED SCENARIO: HOT SUMMER DAY
+================================================================================
+
+### SCENARIO 1: Hot Summer Day - Dehumidification Required
+
+Conditions:
+- Outdoor: 32°C, 60% RH (AH = 20.1 g/m³) - hot and humid
+- Chamber target: 15°C, 75% RH (AH = 9.61 g/m³)
+- Chamber actual: 17°C, 85% RH (AH = 12.28 g/m³)
+- Supply: 14°C, 90% RH
+
+Calculations:
+  AH_chamber = 12.28 g/m³
+  AH_target = 9.61 g/m³
+  AH_error = +2.67 g/m³ (+27.8% above target)
+  
+  Dehumi threshold = 9.61 + 0.8 = 10.41 g/m³
+  12.28 > 10.41 → MODE_HUMID activated
+  
+  Chamber temp: 17°C > 15 + 1.5 = 16.5°C → Cooling needed
+  Outdoor air? 32°C outdoor is HOTTER than chamber → NO!
+
+System Response:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Signal            │ State   │ Reason                                     │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ HUMID   │ AH 12.28 > 10.41 threshold                 │
+│ kamra_hutes       │ ON      │ Temp 17°C > 16.5°C upper band             │
+│ kamra_para_hutes  │ ON      │ MODE_HUMID active                          │
+│ relay_cool        │ ON      │ Water cooling for dehumidification         │
+│ relay_add_air_max │ OFF     │ Outdoor 32°C hotter than chamber!          │
+│ relay_bypass_open │ OFF     │ Closed during dehumidification             │
+│ relay_warm        │ OFF     │ No heating needed                          │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Exit Condition:
+  Exit threshold = 9.61 - 0.3 = 9.31 g/m³
+  MODE_HUMID → MODE_FINE when AH drops below 9.31 g/m³
+  (Must drop 2.97 g/m³ before mode change - hysteresis prevents cycling)
+
+================================================================================
+                    DETAILED SCENARIO: COOL NIGHT
+================================================================================
+
+### SCENARIO 2: Cool Night - Outdoor Air Beneficial
+
+Conditions:
+- Outdoor: 8°C, 85% RH (AH = 7.2 g/m³) - cool and relatively dry
+- Chamber target: 15°C, 75% RH (AH = 9.61 g/m³)
+- Chamber actual: 16°C, 78% RH (AH = 10.71 g/m³)
+
+Calculations:
+  AH_chamber = 10.71 g/m³
+  AH_target = 9.61 g/m³
+  AH_error = +1.1 g/m³ (+11.4% above target)
+  
+  Dehumi threshold = 10.41 g/m³
+  10.71 > 10.41 → MODE_HUMID (just barely)
+  
+  BUT: Outdoor AH (7.2) < Target AH (9.61)
+       AND outdoor is 8°C cooler than chamber
+       Temperature advantage = 16 - 8 = 8°C > 5°C threshold
+
+  Can we use outdoor air? 
+  - Cooling needed? YES (16°C is warm)
+  - Need to dehumi? YES, but outdoor AH (7.2) is LOWER than target!
+  - This is a special case: outdoor air helps BOTH cooling AND drying
+
+System Response:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Signal            │ State   │ Reason                                     │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ HUMID   │ AH 10.71 > 10.41 threshold                 │
+│ kamra_hutes       │ ON      │ Slight cooling needed                      │
+│ use_outdoor_air   │ ON      │ Outdoor cooler AND drier!                  │
+│ relay_cool        │ OFF     │ Using outdoor air instead                  │
+│ relay_add_air_max │ ON      │ Fresh air ventilation                      │
+│ relay_bypass_open │ OFF     │ Would be OFF in pure dehumi mode           │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Energy Efficiency Note:
+Using cool, dry outdoor air instead of water cooling saves significant energy.
+The outdoor air naturally dehumidifies as it's already drier than target.
+
+================================================================================
+                    DETAILED SCENARIO: WINTER DRY (NO HUMIDIFIER)
+================================================================================
+
+### SCENARIO 3: Winter - Humidity Too Low, No Humidifier
+
+Conditions:
+- Outdoor: -5°C, 90% RH (AH = 3.2 g/m³) - very cold, saturated but dry
+- Chamber target: 14°C, 80% RH (AH = 9.61 g/m³)
+- Chamber actual: 12°C, 65% RH (AH = 7.09 g/m³)
+- humidifier_installed = false
+
+Calculations:
+  AH_chamber = 7.09 g/m³
+  AH_target = 9.61 g/m³
+  AH_error = -2.52 g/m³ (-26.2% below target)
+  
+  Humidifier threshold = 9.61 - 0.8 = 8.81 g/m³
+  7.09 < 8.81 → MODE_DRY activated
+  
+  Chamber temp: 12°C < 14 - 1.0 = 13°C → Heating requested
+  
+  BUT: "Better Cold Than Dry" logic kicks in!
+  - humidifier_installed = false
+  - humidity_mode = DRY
+  - Chamber temp 12°C > min_temp_no_humidifier (11°C)
+  
+  → HEATING IS BLOCKED!
+
+System Response:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Signal            │ State   │ Reason                                     │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ DRY     │ AH 7.09 < 8.81 threshold                   │
+│ kamra_futes       │ REQUEST │ Temperature 12°C below 13°C target band    │
+│ heating_blocked   │ TRUE    │ "Better cold than dry" - no humidifier!    │
+│ relay_warm        │ OFF     │ BLOCKED despite temp being low             │
+│ relay_add_air_max │ OFF     │ Outdoor air is drier than chamber          │
+│ relay_humidifier  │ OFF     │ Not installed                              │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Why Block Heating?
+Without humidifier, heating would:
+  1. Raise temperature → Lower RH even further
+  2. Chamber would become even drier
+  3. Product damage would accelerate
+  
+Product at 12°C, 65% RH:
+  - Slower aging (cold slows process)
+  - Some drying occurring but limited
+  - RECOVERABLE once humidity returns
+  
+Product at 15°C, 50% RH (if we heated):
+  - Faster drying due to higher temp
+  - Case hardening risk
+  - IRREVERSIBLE damage!
+
+System waits for:
+  - Product respiration to add moisture
+  - Weather change (higher outdoor humidity)
+  - Manual intervention (add humidifier)
+
+================================================================================
+                    DETAILED SCENARIO: WINTER DRY (WITH HUMIDIFIER)
+================================================================================
+
+### SCENARIO 4: Winter - Same Conditions, But WITH Humidifier
+
+Conditions: Same as Scenario 3, but humidifier_installed = true
+
+System Response (DIFFERENT!):
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Signal            │ State   │ Reason                                     │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ DRY     │ AH 7.09 < 8.81 threshold                   │
+│ kamra_futes       │ ON      │ Temperature 12°C below target band         │
+│ heating_blocked   │ FALSE   │ Humidifier available to compensate!        │
+│ relay_warm        │ ON      │ Heating ALLOWED                            │
+│ relay_humidifier  │ ON      │ Adding moisture to compensate              │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+With humidifier:
+  - Heat raises temperature toward target
+  - Humidifier adds moisture to maintain AH
+  - System can reach both targets simultaneously
+
+Humidifier exit condition:
+  AH must reach 9.61 g/m³ (target) to turn OFF
+  Or until AH > 9.61 + 0.3 = 9.91 g/m³ (hysteresis)
+
+================================================================================
+                    DETAILED SCENARIO: STABLE OPERATION
+================================================================================
+
+### SCENARIO 5: Stable Operation (MODE_FINE)
+
+Conditions:
+- Outdoor: 18°C, 70% RH (AH = 10.8 g/m³)
+- Chamber target: 15°C, 75% RH (AH = 9.61 g/m³)
+- Chamber actual: 15.2°C, 74% RH (AH = 9.40 g/m³)
+
+Calculations:
+  AH_chamber = 9.40 g/m³
+  AH_target = 9.61 g/m³
+  AH_error = -0.21 g/m³ (-2.2% below target)
+  
+  Humidifier threshold = 8.81 g/m³
+  Dehumi threshold = 10.41 g/m³
+  
+  8.81 < 9.40 < 10.41 → MODE_FINE (within deadband)
+  
+  Chamber temp: 15.2°C
+  Lower band: 15 - 1.0 = 14.0°C
+  Upper band: 15 + 1.5 = 16.5°C
+  
+  14.0 < 15.2 < 16.5 → Temperature within deadband
+
+System Response:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Signal            │ State   │ Reason                                     │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ FINE    │ AH 9.40 within ±0.8 of target             │
+│ kamra_hutes       │ OFF     │ Temp within deadband                       │
+│ kamra_futes       │ OFF     │ Temp within deadband                       │
+│ relay_cool        │ OFF     │ No cooling needed                          │
+│ relay_warm        │ OFF     │ No heating needed                          │
+│ relay_humidifier  │ OFF     │ AH above start threshold                   │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+This is the ideal state - system at target, minimal energy use.
+
+================================================================================
+                    v2.5 HYSTERESIS EFFECT ON MODE TRANSITIONS
+================================================================================
+
+Example: Chamber at 16°C, humidity rising and falling
+
+WITHOUT HYSTERESIS (v2.4 - prone to cycling):
+  RH rising:  74% → 75% → 76% → 77%
+  AH rising:  10.07 → 10.21 → 10.35 → 10.48
+  Mode:       FINE → FINE → FINE → HUMID
+                                   (crosses 10.41)
+              
+  RH falling: 77% → 76% → 75%
+  AH falling: 10.48 → 10.35 → 10.21
+  Mode:       HUMID → FINE → FINE
+              (immediately back to FINE!)
+
+  Problem: At boundary, mode can flip rapidly with small changes!
+
+WITH HYSTERESIS (v2.5 - stable):
+  RH rising:  74% → 75% → 76% → 77%
+  AH rising:  10.07 → 10.21 → 10.35 → 10.48
+  Mode:       FINE → FINE → FINE → HUMID
+                                   (crosses 10.41)
+              
+  RH falling: 77% → 76% → 75% → ... → 69%
+  AH falling: 10.48 → 10.35 → 10.21 → ... → 9.40
+  Mode:       HUMID → HUMID → HUMID → ... → HUMID
+              (must reach 9.31 to exit!)
+              
+  At 69%/9.40: Still > 9.31 hysteresis threshold → STAY HUMID
+  At 68%/9.26: Below 9.31 → NOW transition to FINE
+  
+  Result: No cycling at boundaries! System is stable.
+
+================================================================================
+                    RH THRESHOLD FOR HUMIDIFIER BY TEMPERATURE
+================================================================================
+
+At each temperature, what RH triggers humidifier ON/OFF?
+(Based on AH comparison to target AH = 9.61 g/m³ and start AH = 8.81 g/m³)
+
+v2.5: Start threshold is now 8.81 g/m³ (was 8.97 g/m³ in v2.4)
+
+┌────────┬─────────────────┬─────────────────┬─────────────────────────────────┐
+│ Temp   │ Turn ON below   │ Turn OFF above  │ Notes                           │
+├────────┼─────────────────┼─────────────────┼─────────────────────────────────┤
+│   10°C │         < 93.7% │          > 100% │ Cold: higher RH needed          │
+│   11°C │         < 88.1% │        >= 96.1% │ Cold: higher RH needed          │
+│   12°C │         < 82.8% │        >= 90.2% │ Cold: higher RH needed          │
+│   13°C │         < 77.8% │        >= 84.8% │ Cold: higher RH needed          │
+│   14°C │         < 73.1% │        >= 79.7% │ Cold: higher RH needed          │
+│   15°C │         < 68.8% │        >= 75.0% │ AT TARGET TEMP                  │
+│   16°C │         < 64.7% │        >= 70.6% │ Warm: lower RH threshold        │
+│   17°C │         < 60.9% │        >= 66.5% │ Warm: lower RH threshold        │
+│   18°C │         < 57.4% │        >= 62.6% │ Warm: lower RH threshold        │
+│   19°C │         < 54.1% │        >= 59.0% │ Warm: lower RH threshold        │
+│   20°C │         < 51.0% │        >= 55.6% │ Warm: lower RH threshold        │
+│   21°C │         < 48.2% │        >= 52.5% │ Warm: lower RH threshold        │
+│   22°C │         < 45.4% │        >= 49.5% │ Warm: lower RH threshold        │
+└────────┴─────────────────┴─────────────────┴─────────────────────────────────┘
+
+================================================================================
+                    RH THRESHOLD FOR DEHUMIDIFICATION BY TEMPERATURE
+================================================================================
+
+At each temperature, what RH triggers dehumidification?
+(Based on AH comparison to dehumi threshold = 10.41 g/m³)
+
+v2.5: Dehumi threshold is now 10.41 g/m³ (was 9.80 g/m³ in v2.4)
+
+┌────────┬───────────────────┬─────────────────────────────────────────────────┐
+│ Temp   │ Dehumi ON above   │ Notes                                           │
+├────────┼───────────────────┼─────────────────────────────────────────────────┤
+│   10°C │            > 100% │ Impossible - cold air can't hold enough moisture │
+│   11°C │            > 100% │ Very rare at cold temps                         │
+│   12°C │           > 97.8% │ Very high RH needed at cold temps               │
+│   13°C │           > 91.9% │ Very high RH needed at cold temps               │
+│   14°C │           > 86.4% │ Very high RH needed at cold temps               │
+│   15°C │           > 81.3% │ At target temp - threshold ≈ target RH + 8.3%   │
+│   16°C │           > 76.5% │ Lower RH triggers dehumi when warm              │
+│   17°C │           > 72.0% │ Lower RH triggers dehumi when warm              │
+│   18°C │           > 67.9% │ Lower RH triggers dehumi when warm              │
+│   19°C │           > 64.0% │ Lower RH triggers dehumi when warm              │
+│   20°C │           > 60.3% │ Lower RH triggers dehumi when warm              │
+│   21°C │           > 56.9% │ Lower RH triggers dehumi when warm              │
+│   22°C │           > 53.8% │ Lower RH triggers dehumi when warm              │
+└────────┴───────────────────┴─────────────────────────────────────────────────┘
+
+================================================================================
+                    AH VS RH AT DIFFERENT TEMPERATURES
+================================================================================
+
+This table shows why we use Absolute Humidity (AH) instead of Relative Humidity (RH):
+The SAME RH at different temperatures means DIFFERENT moisture content!
+
+Target AH = 9.61 g/m³ (equivalent to 75% RH at 15°C)
+
+┌─────────┬─────────┬───────────┬──────────┬────────────┬─────────────────────────────────┐
+│ Chamber │ Chamber │ Chamber   │ AH Error │ Humidity   │ Notes                           │
+│ Temp °C │ RH %    │ AH g/m³   │ %        │ Mode       │                                 │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   10    │    50   │     4.70  │   -51.1  │ DRY        │ Very dry despite 50% RH!        │
+│   10    │    60   │     5.64  │   -41.3  │ DRY        │                                 │
+│   10    │    70   │     6.58  │   -31.5  │ DRY        │                                 │
+│   10    │    80   │     7.51  │   -21.8  │ DRY        │ 80% RH but still too dry!       │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   13    │    50   │     5.62  │   -41.5  │ DRY        │                                 │
+│   13    │    60   │     6.74  │   -29.8  │ DRY        │                                 │
+│   13    │    70   │     7.87  │   -18.1  │ DRY        │                                 │
+│   13    │    80   │     8.99  │    -6.4  │ FINE       │ Within deadzone (was DRY in v2.4)│
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   16    │    50   │     6.81  │   -29.1  │ DRY        │                                 │
+│   16    │    60   │     8.17  │   -15.0  │ DRY        │                                 │
+│   16    │    70   │     9.53  │    -0.8  │ FINE       │ Just inside deadzone            │
+│   16    │    80   │    10.89  │   +13.3  │ HUMID      │ Dehumidification needed         │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   19    │    50   │     8.17  │   -15.0  │ DRY        │                                 │
+│   19    │    60   │     9.81  │    +2.0  │ FINE       │                                 │
+│   19    │    70   │    11.44  │   +19.1  │ HUMID      │ Only 70% RH but too humid!      │
+│   19    │    80   │    13.08  │   +36.1  │ HUMID      │                                 │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   22    │    50   │     9.70  │    +0.9  │ FINE       │ 50% RH but AH is fine!          │
+│   22    │    60   │    11.64  │   +21.1  │ HUMID      │                                 │
+│   22    │    70   │    13.58  │   +41.3  │ HUMID      │                                 │
+│   22    │    80   │    15.52  │   +61.5  │ HUMID      │ Very high moisture content      │
+└─────────┴─────────┴───────────┴──────────┴────────────┴─────────────────────────────────┘
+
+Key observations:
+  - At 22°C/50% RH: AH is 9.70 g/m³, only 1% above target → FINE mode!
+  - At 10°C/80% RH: AH is 7.51 g/m³, 22% below target → DRY mode!
+  - At 13°C/80% RH: AH is 8.99 g/m³, 6% error (within 8.3%) → FINE mode! (was DRY in v2.4)
+  - Temperature alone doesn't determine mode - HUMIDITY does!
+
+================================================================================
+                           VALIDATION CHECKLIST
+================================================================================
+
+✓ HUMIDITY-PRIMARY deadzone working:
+  - FINE mode when AH within ±8.3% of target (8.81-10.41 g/m³)
+  - HUMID/DRY mode when AH outside this range
+  - Mode determined by HUMIDITY, not temperature
+
+✓ v2.5 CASCADE HIERARCHY:
+  - Chamber (outer) has WIDER bands than Supply (inner)
+  - AH: 1.9 g/m³ > 1.2 g/m³ ✓
+  - Temp: 3.0°C > 2.3°C ✓
+
+✓ SAFE INITIALIZATION:
+  - 32-second init period after reboot
+  - All relays OFF during initialization
+  - Control logic runs but outputs disabled
+  - Prevents false emergency responses
+
+✓ Mode examples:
+  - 22°C/50% RH → AH 9.70 (1% above target) → FINE mode
+  - 10°C/80% RH → AH 7.51 (22% below target) → DRY mode
+  - 13°C/80% RH → AH 8.99 (6% error, within 8.3%) → FINE mode (was DRY in v2.4!)
+
+✓ Outdoor air for cooling only:
+  - Used at 19°C/50%RH when outdoor is cold (5°C or less)
+  - NOT used when dehumidifying (even if outdoor is cold)
+
+✓ Water at 0°C for dehumidification:
+  - Bypass OFF when dehumi active (16°C/80%RH, 19°C/70%RH)
+
+✓ Dehumi + Heat combination:
+  - Both COOL and WARM relays ON for cold humid conditions
+  - Example: 13°C/88%RH would trigger both
+
+✓ Humidifier control:
+  - ON when AH < start threshold (8.81 g/m³)
+  - OFF when AH >= target (9.61 g/m³)
+  - Hysteresis prevents cycling
+
+✓ v2.5 Temperature threshold:
+  - Cooling now triggers at >16.5°C (was >16.0°C)
+  - Allows more temperature tolerance during dehumidification
+
+✓ "Better Cold Than Dry" logic:
+  - Heating blocked when MODE_DRY and no humidifier
+  - Only if chamber > 11°C (prevents freezing)
+  - Protects product from irreversible drying damage
+
+================================================================================
+                              END OF REPORT
+================================================================================
