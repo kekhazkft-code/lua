@@ -1,0 +1,657 @@
+# Erlelo Szabályozási Logika - Forgatókönyv Elemzés Jelentés v2.5
+# Készült: 2024. November
+# PÁRATARTALOM-ELSŐDLEGES SZABÁLYOZÁS KETTŐS-RÉTEGŰ KASZKÁDDAL - "Inkább hideg mint száraz"
+# Célérték: 15.0°C, 75.0% RH | AH Holtsáv: ±0.8 g/m³ (8.3%) | Külső küszöb: 5.0°C
+#
+# ⚠️ NEM TÁRGYALHATÓ HŐMÉRSÉKLETI KORLÁT:
+# Ha kamra hőm. > cél + deltahi (16.5°C) → HŰTENI KELL (víz vagy külső levegő)
+# Ez független a páratartalom módtól - kemény biztonsági korlát!
+#
+# v2.5 VÁLTOZÁSOK: Kettős-rétegű kaszkád szabályozás irányított hiszterézissel
+#   - Kamra (külső hurok): szélesebb holtsáv (0.8 g/m³), hiszterézis (0.3 g/m³)
+#   - Befújt (belső hurok): szűkebb holtsáv (0.5 g/m³), hiszterézis (0.2 g/m³)
+#   - Javított befújt hőm. küszöbök (2.0→1.0°C, 1.5→1.0°C)
+#   - Kamra hőm. küszöb: 16.5°C (volt 16.0°C)
+#   - BIZTONSÁGOS INICIALIZÁLÁS: 32 másodperces indítás minden relé KI
+
+================================================================================
+                         v2.5 PARAMÉTER VÁLTOZÁSOK
+================================================================================
+
+┌─────────────────────────────────────┬───────────┬───────────┬─────────────────┐
+│ Paraméter                           │ v2.4      │ v2.5      │ Változás        │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ PÁRATARTALOM - KAMRA (Külső Hurok)  │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ ah_deadzone_kamra                   │ 50        │ 80        │ +60% szélesebb  │
+│ (tárolva 0.01 g/m³-ként)            │ (0.5 g/m³)│ (0.8 g/m³)│                 │
+│                                     │           │           │                 │
+│ ah_hysteresis_kamra                 │ -         │ 30        │ ÚJ              │
+│ (tárolva 0.01 g/m³-ként)            │           │ (0.3 g/m³)│                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ PÁRATARTALOM - BEFÚJT (Belső Hurok) │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ ah_deadzone_befujt                  │ -         │ 50        │ ÚJ              │
+│ (tárolva 0.01 g/m³-ként)            │           │ (0.5 g/m³)│                 │
+│                                     │           │           │                 │
+│ ah_hysteresis_befujt                │ -         │ 20        │ ÚJ              │
+│ (tárolva 0.01 g/m³-ként)            │           │ (0.2 g/m³)│                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ HŐMÉRSÉKLET - KAMRA (Külső Hurok)   │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ deltahi_kamra_homerseklet           │ 10        │ 15        │ +50% szélesebb  │
+│ (tárolva 0.1°C-ként)                │ (1.0°C)   │ (1.5°C)   │                 │
+│                                     │           │           │                 │
+│ deltalo_kamra_homerseklet           │ 10        │ 10        │ változatlan     │
+│ (tárolva 0.1°C-ként)                │ (1.0°C)   │ (1.0°C)   │                 │
+│                                     │           │           │                 │
+│ temp_hysteresis_kamra               │ -         │ 5         │ ÚJ              │
+│ (tárolva 0.1°C-ként)                │           │ (0.5°C)   │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ HŐMÉRSÉKLET - BEFÚJT (Belső Hurok)  │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ deltahi_befujt_homerseklet          │ 20        │ 10        │ -50% SZŰKEBB    │
+│ (tárolva 0.1°C-ként)                │ (2.0°C)   │ (1.0°C)   │ (fordított volt)│
+│                                     │           │           │                 │
+│ deltalo_befujt_homerseklet          │ 15        │ 10        │ -33% SZŰKEBB    │
+│ (tárolva 0.1°C-ként)                │ (1.5°C)   │ (1.0°C)   │ (fordított volt)│
+│                                     │           │           │                 │
+│ temp_hysteresis_befujt              │ -         │ 3         │ ÚJ              │
+│ (tárolva 0.1°C-ként)                │           │ (0.3°C)   │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ INICIALIZÁLÁS                       │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ init_duration                       │ -         │ 32        │ ÚJ              │
+│ (másodperc)                         │           │ (32mp)    │ Bizt. indítás   │
+└─────────────────────────────────────┴───────────┴───────────┴─────────────────┘
+
+KASZKÁD HIERARCHIA ELLENŐRZÉS:
+  AH:   Kamra 1.9 g/m³ > Befújt 1.2 g/m³  ✓ (arány 1.58)
+  Hőm:  Kamra 3.0°C > Befújt 2.3°C        ✓ (arány 1.30)
+
+================================================================================
+                              ÖSSZEFOGLALÓ
+================================================================================
+
+## PÁRATARTALOM-ELSŐDLEGES Szabályozási Filozófia
+A rendszer a PÁRATARTALMAT helyezi előtérbe a hőmérséklettel szemben, mert:
+  - Túl száraz → VISSZAFORDÍTHATATLAN termékkár (felület repedés, kéregképződés)
+  - Túl párás → Penész kockázat, kritikus gyors kezelés
+  - Túl hideg → Csak lassítja a folyamatot, TELJESEN HELYREÁLLÍTHATÓ
+  - A termék egyensúlya az Abszolút Páratartalomtól (AH) függ, nem a hőmérséklettől
+
+## Teszt Paraméterek (v2.5)
+- Kamra Hőmérséklet Tartomány: 10°C - 22°C (3°C lépés)
+- Kamra Páratartalom Tartomány: 50% - 80% RH (10% lépés)
+- Külső Hőmérséklet Tartomány: -5°C - 25°C (5°C lépés)
+- Célérték: 15.0°C, 75.0% RH (AH = 9.61 g/m³)
+- AH Holtsáv (Kamra): ±0.8 g/m³ (cél 8.3%-a)
+- AH Hiszterézis (Kamra): 0.3 g/m³
+- Párásító Indítás AH: 8.81 g/m³ (cél - holtsáv)
+- Párátlanítás Küszöb AH: 10.41 g/m³ (cél + holtsáv)
+- Inicializálási Időszak: 32 másodperc (minden relé KI)
+- Tesztelt Forgatókönyvek: 140
+
+## Szabályozási Módok Összefoglalása (v2.5 - PÁRATARTALOM-ELSŐDLEGES)
+┌─────────────┬───────┬─────────────────────────────────────────────────────┐
+│ Mód         │ Darab │ Feltétel                                            │
+├─────────────┼───────┼─────────────────────────────────────────────────────┤
+│ PÁRÁS       │   35  │ AH > 10.41 g/m³ (párátlanítás szükséges)            │
+│ FINOM       │   42  │ AH 8.81-10.41 g/m³ (pára OK, hőm. finomhangolás)    │
+│ SZÁRAZ      │   63  │ AH < 8.81 g/m³ (párásítás szükséges)                │
+└─────────────┴───────┴─────────────────────────────────────────────────────┘
+
+## Szabályozási Műveletek Összefoglalása
+┌─────────────────────┬───────┬─────────────────────────────────────────┐
+│ Művelet             │ Darab │ Feltételek                              │
+├─────────────────────┼───────┼─────────────────────────────────────────┤
+│ Hűtés szükséges     │   56  │ Kamra > 16.5°C (cél + 1.5)              │
+│ Fűtés szükséges     │   56  │ Kamra < 14°C (cél - 1.0)                │
+│ Párátlanítás        │   35  │ AH > 10.41 g/m³ (szélesebb holtsáv)     │
+│ Párásítás           │   63  │ AH < 8.81 g/m³ (szélesebb holtsáv)      │
+│ Külső levegő haszn. │   13  │ Csak hűtés + kamra-külső ≥ 5°C          │
+│ Vízhűtés használat  │   50  │ Párátl. VAGY (hűtés + külső nem segít)  │
+│ Párátl. + Fűtés     │    7  │ Hideg kamra + magas páratartalom        │
+└─────────────────────┴───────┴─────────────────────────────────────────┘
+
+## Fő Relé Állapotok Forgatókönyvenként
+┌────────────────────────┬──────┬──────┬─────┬─────┬───────┬─────────────────────────┐
+│ Forgatókönyv           │ HŰTÉS│FŰTÉS │ LEV │ BYP │PÁRÁS. │ Példa                   │
+├────────────────────────┼──────┼──────┼─────┼─────┼───────┼─────────────────────────┤
+│ INICIALIZÁLÁS          │ KI   │ KI   │ KI  │ KI  │ KI    │ Első 32mp újraind. után │
+│ Fűtés + Párásítás      │ KI   │  BE  │ KI  │ KI  │  BE   │ 10°C, 50% RH (száraz!)  │
+│ Hűtés csak (víz)       │  BE  │ KI   │ KI  │  BE │ KI    │ 19°C, 50% RH, kül 15°C  │
+│ Hűtés (külső levegő)   │ KI   │ KI   │  BE │  BE │ KI    │ 19°C, 50% RH, kül 5°C   │
+│ Párátlanítás csak      │  BE  │ KI   │ KI  │ KI  │ KI    │ 16°C, 80% RH            │
+│ Párátlanítás + Hűtés   │  BE  │ KI   │ KI  │ KI  │ KI    │ 19°C, 70% RH            │
+│ Párátlanítás + Fűtés   │  BE  │  BE  │ KI  │ KI  │ KI    │ 13°C, 88% RH            │
+│ Párásítás csak         │ KI   │ KI   │ KI  │ KI  │  BE   │ 16°C, 60% RH            │
+└────────────────────────┴──────┴──────┴─────┴─────┴───────┴─────────────────────────┘
+
+* Párásító BE függ a has_humidifier=true beállítástól a kamránál
+
+================================================================================
+                    BIZTONSÁGOS INICIALIZÁLÁSI VISELKEDÉS
+================================================================================
+
+## Probléma: Újraindítás Inicializálás Nélkül
+
+Amikor a SINUM vezérlő újraindul, minden változó alapértékre (0) áll.
+Inicializálási védelem nélkül:
+
+  ÚJRAINDÍTÁS → Változók = 0 → Vezérlő látja T=0°C, RH=0%
+                               ↓
+                            "VÉSZHELYZET! Fagy és csontszáraz!"
+                               ↓
+                            relay_warm = BE, relay_humidifier = BE
+                               ↓
+                            POTENCIÁLIS BERENDEZÉS KÁROSODÁS
+
+## Megoldás: 32 Másodperces Biztonságos Inicializálás
+
+┌────────┬─────────────┬─────────────┬────────────────────────────────────────┐
+│ Idő    │ init_compl. │ Relék       │ Tevékenység                            │
+├────────┼─────────────┼─────────────┼────────────────────────────────────────┤
+│ 0mp    │ hamis       │ MIND KI     │ Érzékelők olvasása indul               │
+│ 5mp    │ hamis       │ MIND KI     │ Pufferek töltődnek (5 minta kell)      │
+│ 15mp   │ hamis       │ MIND KI     │ Érvényes AH/HP számítások              │
+│ 25mp   │ hamis       │ MIND KI     │ Páratartalom mód meghatározva          │
+│ 32mp   │ igaz        │ VEZÉRELVE   │ Normál üzemmód indul                   │
+└────────┴─────────────┴─────────────┴────────────────────────────────────────┘
+
+## Jelek az Inicializálás Alatt
+
+{
+  "init_complete": false,
+  "init_countdown": 15,
+  "humidity_mode": 1,
+  "kamra_futes": true,      ← Szabályozási logika fut
+  "relay_warm": false       ← De relék KI maradnak!
+}
+
+Megjegyzés: A szabályozási logika normálisan fut az init alatt (kamra_futes=true 
+azt jelenti "fűtés kérve"), de a relé kimenetek le vannak tiltva (relay_warm=false) 
+amíg az init be nem fejeződik. Ez lehetővé teszi a pufferek feltöltését és a módok 
+stabilizálódását.
+
+================================================================================
+                    KÜLSŐ LEVEGŐ HASZNÁLATI STRATÉGIA
+================================================================================
+
+**Külső levegő CSAK hűtésre használható, SOHA párátlanításra**
+
+A külső levegő nem tudja eltávolítani a nedvességet - a párátlanításhoz hideg víz
+tekercsek kellenek a kondenzációhoz. A bypass ZÁRVA kell legyen párátlanítás alatt.
+
+Döntési logika:
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│  Kell hűteni?  ──NEM──►  Nincs külső levegő                               │
+│       │                                                                    │
+│      IGEN                                                                  │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Kell párátlanítani?  ──IGEN──►  CSAK vízhűtés (külső nem tud párátl.!)   │
+│       │                                                                    │
+│       NEM                                                                  │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Külső ≥ 5°C-kal hidegebb?  ──NEM──►  Vízhűtés (külső nem segít)          │
+│       │                                                                    │
+│      IGEN                                                                  │
+│       │                                                                    │
+│       ▼                                                                    │
+│  KÜLSŐ LEVEGŐ HASZNÁLATA (relay_add_air_max = BE, relay_cool = KI)        │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+Példák:
+  19°C kamra, 50% RH, külső 5°C  → Külső levegő (14°C előny!)
+  19°C kamra, 50% RH, külső 15°C → Vízhűtés (csak 4°C előny)
+  19°C kamra, 70% RH, külső 0°C  → Vízhűtés (PÁRÁTLANÍTÁS kell, bypass KI)
+
+================================================================================
+                    RÉSZLETES FORGATÓKÖNYV: RENDSZER ÚJRAINDÍTÁS
+================================================================================
+
+### 0. FORGATÓKÖNYV: Rendszer Újraindítás - Biztonságos Inicializálás
+
+Feltételek ÚJRAINDÍTÁS ELŐTT:
+- Kamra aktuális: 15°C, 75% RH (pontosan a célértéken)
+- Külső: 10°C, 70% RH
+- Minden rendszer normálisan működik
+
+Feltételek ÚJRAINDÍTÁS UTÁN (t=0):
+- Minden változó 0-ra áll
+- Kamra érzékelők mutatnak: T=0, RH=0
+- Szabályozási logika látna: AH=0 (SZÁRAZ vészhelyzet!)
+
+Válasz INICIALIZÁLÁS NÉLKÜL:
+┌─────────────────────────────────────────────────────────────────────────┐
+│ IDŐ   │ ÉRZÉKELŐK   │ SZABÁLYOZÁSI DÖNTÉS    │ RELÉK                   │
+├───────┼─────────────┼────────────────────────┼─────────────────────────┤
+│ 0mp   │ T=0, RH=0   │ MÓD_SZÁRAZ, fűtés kell │ relay_warm=BE (ROSSZ!)  │
+│ 1mp   │ T=5, RH=20  │ MÓD_SZÁRAZ, fűtés kell │ relay_warm=BE           │
+│ 2mp   │ T=10, RH=50 │ MÓD_SZÁRAZ, fűtés kell │ relay_warm=BE           │
+│ ...   │ stabilizál. │ ...                    │ ...                     │
+│ 5mp   │ T=15, RH=75 │ MÓD_FINOM              │ relay_warm=KI (végre)   │
+└───────┴─────────────┴────────────────────────┴─────────────────────────┘
+PROBLÉMA: 5 másodperc felesleges fűtés amíg az érzékelők stabilizálódnak!
+
+Válasz INICIALIZÁLÁSSAL (v2.5):
+┌─────────────────────────────────────────────────────────────────────────┐
+│ IDŐ   │ ÉRZÉKELŐK   │ SZABÁLYOZÁSI DÖNTÉS    │ RELÉK                   │
+├───────┼─────────────┼────────────────────────┼─────────────────────────┤
+│ 0mp   │ T=0, RH=0   │ MÓD_SZÁRAZ, fűtés kell │ MIND KI (init_complete  │
+│ 1mp   │ T=5, RH=20  │ MÓD_SZÁRAZ, fűtés kell │ =hamis, countdown=31)   │
+│ 5mp   │ T=15, RH=75 │ MÓD_FINOM              │ MIND KI (countdown=27)  │
+│ 15mp  │ T=15, RH=75 │ MÓD_FINOM              │ MIND KI (countdown=17)  │
+│ 32mp  │ T=15, RH=75 │ MÓD_FINOM              │ NORMÁL VEZÉRLÉS         │
+│       │             │                        │ (init_complete=igaz)    │
+└───────┴─────────────┴────────────────────────┴─────────────────────────┘
+EREDMÉNY: Nincs felesleges relé aktiválás az érzékelő stabilizálódás alatt!
+
+================================================================================
+                    RÉSZLETES FORGATÓKÖNYV: FORRÓ NYÁRI NAP
+================================================================================
+
+### 1. FORGATÓKÖNYV: Forró Nyári Nap - Párátlanítás Szükséges
+
+Feltételek:
+- Külső: 32°C, 60% RH (AH = 20.1 g/m³) - forró és párás
+- Kamra cél: 15°C, 75% RH (AH = 9.61 g/m³)
+- Kamra aktuális: 17°C, 85% RH (AH = 12.28 g/m³)
+- Befújt: 14°C, 90% RH
+
+Számítások:
+  AH_kamra = 12.28 g/m³
+  AH_cél = 9.61 g/m³
+  AH_hiba = +2.67 g/m³ (+27.8% cél felett)
+  
+  Párátlanítás küszöb = 9.61 + 0.8 = 10.41 g/m³
+  12.28 > 10.41 → MÓD_PÁRÁS aktiválva
+  
+  Kamra hőm: 17°C > 15 + 1.5 = 16.5°C → Hűtés szükséges
+  Külső levegő? 32°C külső MELEGEBB mint a kamra → NEM!
+
+Rendszer Válasz:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Jel               │ Állapot │ Ok                                         │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ PÁRÁS   │ AH 12.28 > 10.41 küszöb                    │
+│ kamra_hutes       │ BE      │ Hőm 17°C > 16.5°C felső sáv               │
+│ kamra_para_hutes  │ BE      │ MÓD_PÁRÁS aktív                            │
+│ relay_cool        │ BE      │ Vízhűtés párátlanításhoz                   │
+│ relay_add_air_max │ KI      │ Külső 32°C melegebb mint a kamra!          │
+│ relay_bypass_open │ KI      │ Zárva párátlanítás alatt                   │
+│ relay_warm        │ KI      │ Nincs fűtés szükség                        │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Kilépési Feltétel:
+  Kilépési küszöb = 9.61 - 0.3 = 9.31 g/m³
+  MÓD_PÁRÁS → MÓD_FINOM amikor AH 9.31 g/m³ alá csökken
+  (2.97 g/m³-t kell csökkennie mód váltás előtt - hiszterézis megakadályozza az oszcillációt)
+
+================================================================================
+                    RÉSZLETES FORGATÓKÖNYV: HŰVÖS ÉJ
+================================================================================
+
+### 2. FORGATÓKÖNYV: Hűvös Éj - Külső Levegő Előnyös
+
+Feltételek:
+- Külső: 8°C, 85% RH (AH = 7.2 g/m³) - hűvös és viszonylag száraz
+- Kamra cél: 15°C, 75% RH (AH = 9.61 g/m³)
+- Kamra aktuális: 16°C, 78% RH (AH = 10.71 g/m³)
+
+Számítások:
+  AH_kamra = 10.71 g/m³
+  AH_cél = 9.61 g/m³
+  AH_hiba = +1.1 g/m³ (+11.4% cél felett)
+  
+  Párátlanítás küszöb = 10.41 g/m³
+  10.71 > 10.41 → MÓD_PÁRÁS (éppen csak)
+  
+  DE: Külső AH (7.2) < Cél AH (9.61)
+      ÉS külső 8°C-kal hidegebb mint a kamra
+      Hőmérsékleti előny = 16 - 8 = 8°C > 5°C küszöb
+
+  Használhatunk külső levegőt? 
+  - Hűtés szükséges? IGEN (16°C meleg)
+  - Párátlanítás kell? IGEN, de külső AH (7.2) ALACSONYABB mint a cél!
+  - Ez speciális eset: külső levegő segít MIND hűtésben ÉS szárításban
+
+Rendszer Válasz:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Jel               │ Állapot │ Ok                                         │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ PÁRÁS   │ AH 10.71 > 10.41 küszöb                    │
+│ kamra_hutes       │ BE      │ Enyhe hűtés szükséges                      │
+│ use_outdoor_air   │ BE      │ Külső hidegebb ÉS szárazabb!               │
+│ relay_cool        │ KI      │ Külső levegő használata helyette           │
+│ relay_add_air_max │ BE      │ Friss levegő szellőztetés                  │
+│ relay_bypass_open │ KI      │ KI lenne tiszta párátl. módban             │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Energia Hatékonyság Megjegyzés:
+Hűvös, száraz külső levegő használata vízhűtés helyett jelentős energiát takarít meg.
+A külső levegő természetesen párátlanít mivel már szárazabb a célértéknél.
+
+================================================================================
+                    RÉSZLETES FORGATÓKÖNYV: TÉLI SZÁRAZ (PÁRÁSÍTÓ NÉLKÜL)
+================================================================================
+
+### 3. FORGATÓKÖNYV: Tél - Páratartalom Túl Alacsony, Nincs Párásító
+
+Feltételek:
+- Külső: -5°C, 90% RH (AH = 3.2 g/m³) - nagyon hideg, telített de száraz
+- Kamra cél: 14°C, 80% RH (AH = 9.61 g/m³)
+- Kamra aktuális: 12°C, 65% RH (AH = 7.09 g/m³)
+- humidifier_installed = hamis
+
+Számítások:
+  AH_kamra = 7.09 g/m³
+  AH_cél = 9.61 g/m³
+  AH_hiba = -2.52 g/m³ (-26.2% cél alatt)
+  
+  Párásító küszöb = 9.61 - 0.8 = 8.81 g/m³
+  7.09 < 8.81 → MÓD_SZÁRAZ aktiválva
+  
+  Kamra hőm: 12°C < 14 - 1.0 = 13°C → Fűtés kérve
+  
+  DE: "Inkább Hideg Mint Száraz" logika lép működésbe!
+  - humidifier_installed = hamis
+  - humidity_mode = SZÁRAZ
+  - Kamra hőm 12°C > min_temp_no_humidifier (11°C)
+  
+  → FŰTÉS TILTVA!
+
+Rendszer Válasz:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Jel               │ Állapot │ Ok                                         │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ SZÁRAZ  │ AH 7.09 < 8.81 küszöb                      │
+│ kamra_futes       │ KÉRÉS   │ Hőmérséklet 12°C a 13°C cél sáv alatt      │
+│ heating_blocked   │ IGAZ    │ "Inkább hideg mint száraz" - nincs párás.! │
+│ relay_warm        │ KI      │ TILTVA annak ellenére hogy hőm. alacsony   │
+│ relay_add_air_max │ KI      │ Külső levegő szárazabb mint a kamra        │
+│ relay_humidifier  │ KI      │ Nincs telepítve                            │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Miért Tiltjuk a Fűtést?
+Párásító nélkül a fűtés:
+  1. Hőmérséklet emelkedik → RH még jobban csökken
+  2. A kamra még szárazabb lesz
+  3. A termékkár felgyorsul
+  
+Termék 12°C, 65% RH-nál:
+  - Lassabb érlelés (hideg lassítja a folyamatot)
+  - Némi száradás történik de korlátozott
+  - HELYREÁLLÍTHATÓ amint a páratartalom visszatér
+  
+Termék 15°C, 50% RH-nál (ha fűtenénk):
+  - Gyorsabb száradás a magasabb hőm. miatt
+  - Kéregképződés kockázata
+  - VISSZAFORDÍTHATATLAN kár!
+
+A rendszer vár:
+  - Termék légzés páratartalmat ad
+  - Időjárás változás (magasabb külső páratartalom)
+  - Kézi beavatkozás (párásító hozzáadása)
+
+================================================================================
+                    RÉSZLETES FORGATÓKÖNYV: TÉLI SZÁRAZ (PÁRÁSÍTÓVAL)
+================================================================================
+
+### 4. FORGATÓKÖNYV: Tél - Ugyanazok a Feltételek, DE VAN Párásító
+
+Feltételek: Ugyanaz mint a 3. Forgatókönyv, de humidifier_installed = igaz
+
+Rendszer Válasz (KÜLÖNBÖZŐ!):
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Jel               │ Állapot │ Ok                                         │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ SZÁRAZ  │ AH 7.09 < 8.81 küszöb                      │
+│ kamra_futes       │ BE      │ Hőmérséklet 12°C a cél sáv alatt           │
+│ heating_blocked   │ HAMIS   │ Párásító elérhető kompenzáláshoz!          │
+│ relay_warm        │ BE      │ Fűtés ENGEDÉLYEZVE                         │
+│ relay_humidifier  │ BE      │ Nedvesség hozzáadása kompenzáláshoz        │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Párásítóval:
+  - Fűtés emeli a hőmérsékletet a cél felé
+  - Párásító nedvességet ad az AH fenntartásához
+  - A rendszer mindkét célértéket elérheti egyszerre
+
+Párásító kilépési feltétel:
+  AH-nak el kell érnie 9.61 g/m³-t (cél) a kikapcsoláshoz
+  Vagy amíg AH > 9.61 + 0.3 = 9.91 g/m³ (hiszterézis)
+
+================================================================================
+                    RÉSZLETES FORGATÓKÖNYV: STABIL MŰKÖDÉS
+================================================================================
+
+### 5. FORGATÓKÖNYV: Stabil Működés (MÓD_FINOM)
+
+Feltételek:
+- Külső: 18°C, 70% RH (AH = 10.8 g/m³)
+- Kamra cél: 15°C, 75% RH (AH = 9.61 g/m³)
+- Kamra aktuális: 15.2°C, 74% RH (AH = 9.40 g/m³)
+
+Számítások:
+  AH_kamra = 9.40 g/m³
+  AH_cél = 9.61 g/m³
+  AH_hiba = -0.21 g/m³ (-2.2% cél alatt)
+  
+  Párásító küszöb = 8.81 g/m³
+  Párátlanítás küszöb = 10.41 g/m³
+  
+  8.81 < 9.40 < 10.41 → MÓD_FINOM (holtsávon belül)
+  
+  Kamra hőm: 15.2°C
+  Alsó sáv: 15 - 1.0 = 14.0°C
+  Felső sáv: 15 + 1.5 = 16.5°C
+  
+  14.0 < 15.2 < 16.5 → Hőmérséklet holtsávon belül
+
+Rendszer Válasz:
+┌───────────────────┬─────────┬────────────────────────────────────────────┐
+│ Jel               │ Állapot │ Ok                                         │
+├───────────────────┼─────────┼────────────────────────────────────────────┤
+│ humidity_mode     │ FINOM   │ AH 9.40 a cél ±0.8-án belül               │
+│ kamra_hutes       │ KI      │ Hőm holtsávon belül                        │
+│ kamra_futes       │ KI      │ Hőm holtsávon belül                        │
+│ relay_cool        │ KI      │ Nincs hűtés szükség                        │
+│ relay_warm        │ KI      │ Nincs fűtés szükség                        │
+│ relay_humidifier  │ KI      │ AH az indítási küszöb felett               │
+└───────────────────┴─────────┴────────────────────────────────────────────┘
+
+Ez az ideális állapot - rendszer a célértéken, minimális energia felhasználás.
+
+================================================================================
+                    v2.5 HISZTERÉZIS HATÁSA MÓD ÁTMENETEKRE
+================================================================================
+
+Példa: Kamra 16°C-on, páratartalom emelkedik és csökken
+
+HISZTERÉZIS NÉLKÜL (v2.4 - oszcillációra hajlamos):
+  RH emelkedik:  74% → 75% → 76% → 77%
+  AH emelkedik:  10.07 → 10.21 → 10.35 → 10.48
+  Mód:           FINOM → FINOM → FINOM → PÁRÁS
+                                        (átlépi 10.41-et)
+              
+  RH csökken:    77% → 76% → 75%
+  AH csökken:    10.48 → 10.35 → 10.21
+  Mód:           PÁRÁS → FINOM → FINOM
+                 (azonnal vissza FINOM-ba!)
+
+  Probléma: A határon a mód gyorsan váltakozhat kis változásoknál!
+
+HISZTERÉZISSEL (v2.5 - stabil):
+  RH emelkedik:  74% → 75% → 76% → 77%
+  AH emelkedik:  10.07 → 10.21 → 10.35 → 10.48
+  Mód:           FINOM → FINOM → FINOM → PÁRÁS
+                                        (átlépi 10.41-et)
+              
+  RH csökken:    77% → 76% → 75% → ... → 69%
+  AH csökken:    10.48 → 10.35 → 10.21 → ... → 9.40
+  Mód:           PÁRÁS → PÁRÁS → PÁRÁS → ... → PÁRÁS
+                 (el kell érnie 9.31-et a kilépéshez!)
+              
+  69%/9.40-nál: Még > 9.31 hiszterézis küszöb → MARAD PÁRÁS
+  68%/9.26-nál: 9.31 alatt → MOST vált FINOM-ba
+  
+  Eredmény: Nincs oszcilláció a határokon! A rendszer stabil.
+
+================================================================================
+                    RH KÜSZÖB PÁRÁSÍTÓHOZ HŐMÉRSÉKLET SZERINT
+================================================================================
+
+Minden hőmérsékleten milyen RH kapcsolja BE/KI a párásítót?
+(AH összehasonlítás alapján cél AH = 9.61 g/m³ és indítás AH = 8.81 g/m³)
+
+v2.5: Indítási küszöb most 8.81 g/m³ (volt 8.97 g/m³ v2.4-ben)
+
+┌────────┬─────────────────┬─────────────────┬─────────────────────────────────┐
+│ Hőm    │ BE kapcsol alat │ KI kapcsol fele │ Megjegyzések                    │
+├────────┼─────────────────┼─────────────────┼─────────────────────────────────┤
+│   10°C │         < 93.7% │          > 100% │ Hideg: magasabb RH kell         │
+│   11°C │         < 88.1% │        >= 96.1% │ Hideg: magasabb RH kell         │
+│   12°C │         < 82.8% │        >= 90.2% │ Hideg: magasabb RH kell         │
+│   13°C │         < 77.8% │        >= 84.8% │ Hideg: magasabb RH kell         │
+│   14°C │         < 73.1% │        >= 79.7% │ Hideg: magasabb RH kell         │
+│   15°C │         < 68.8% │        >= 75.0% │ CÉL HŐMÉRSÉKLETEN               │
+│   16°C │         < 64.7% │        >= 70.6% │ Meleg: alacsonyabb RH küszöb    │
+│   17°C │         < 60.9% │        >= 66.5% │ Meleg: alacsonyabb RH küszöb    │
+│   18°C │         < 57.4% │        >= 62.6% │ Meleg: alacsonyabb RH küszöb    │
+│   19°C │         < 54.1% │        >= 59.0% │ Meleg: alacsonyabb RH küszöb    │
+│   20°C │         < 51.0% │        >= 55.6% │ Meleg: alacsonyabb RH küszöb    │
+│   21°C │         < 48.2% │        >= 52.5% │ Meleg: alacsonyabb RH küszöb    │
+│   22°C │         < 45.4% │        >= 49.5% │ Meleg: alacsonyabb RH küszöb    │
+└────────┴─────────────────┴─────────────────┴─────────────────────────────────┘
+
+================================================================================
+                    RH KÜSZÖB PÁRÁTLANÍTÁSHOZ HŐMÉRSÉKLET SZERINT
+================================================================================
+
+Minden hőmérsékleten milyen RH kapcsolja be a párátlanítást?
+(AH összehasonlítás alapján párátl. küszöb = 10.41 g/m³)
+
+v2.5: Párátlanítás küszöb most 10.41 g/m³ (volt 9.80 g/m³ v2.4-ben)
+
+┌────────┬───────────────────┬─────────────────────────────────────────────────┐
+│ Hőm    │ Párátl. BE felett │ Megjegyzések                                    │
+├────────┼───────────────────┼─────────────────────────────────────────────────┤
+│   10°C │            > 100% │ Lehetetlen - hideg levegő nem tart elég nedves. │
+│   11°C │            > 100% │ Nagyon ritka hideg hőmérsékleten                │
+│   12°C │           > 97.8% │ Nagyon magas RH kell hideg hőm.-en              │
+│   13°C │           > 91.9% │ Nagyon magas RH kell hideg hőm.-en              │
+│   14°C │           > 86.4% │ Nagyon magas RH kell hideg hőm.-en              │
+│   15°C │           > 81.3% │ Cél hőm.-en - küszöb ≈ cél RH + 8.3%            │
+│   16°C │           > 76.5% │ Alacsonyabb RH kapcsolja be melegben            │
+│   17°C │           > 72.0% │ Alacsonyabb RH kapcsolja be melegben            │
+│   18°C │           > 67.9% │ Alacsonyabb RH kapcsolja be melegben            │
+│   19°C │           > 64.0% │ Alacsonyabb RH kapcsolja be melegben            │
+│   20°C │           > 60.3% │ Alacsonyabb RH kapcsolja be melegben            │
+│   21°C │           > 56.9% │ Alacsonyabb RH kapcsolja be melegben            │
+│   22°C │           > 53.8% │ Alacsonyabb RH kapcsolja be melegben            │
+└────────┴───────────────────┴─────────────────────────────────────────────────┘
+
+================================================================================
+                    AH VS RH KÜLÖNBÖZŐ HŐMÉRSÉKLETEKEN
+================================================================================
+
+Ez a táblázat mutatja miért használunk Abszolút Páratartalmat (AH) Relatív
+Páratartalom (RH) helyett: UGYANAZ az RH különböző hőmérsékleteken KÜLÖNBÖZŐ
+nedvességtartalmat jelent!
+
+Cél AH = 9.61 g/m³ (egyenértékű 75% RH-val 15°C-on)
+
+┌─────────┬─────────┬───────────┬──────────┬────────────┬─────────────────────────────────┐
+│ Kamra   │ Kamra   │ Kamra     │ AH Hiba  │ Páratart.  │ Megjegyzések                    │
+│ Hőm °C  │ RH %    │ AH g/m³   │ %        │ Mód        │                                 │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   10    │    50   │     4.70  │   -51.1  │ SZÁRAZ     │ Nagyon száraz 50% RH ellenére!  │
+│   10    │    60   │     5.64  │   -41.3  │ SZÁRAZ     │                                 │
+│   10    │    70   │     6.58  │   -31.5  │ SZÁRAZ     │                                 │
+│   10    │    80   │     7.51  │   -21.8  │ SZÁRAZ     │ 80% RH de még mindig túl száraz!│
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   13    │    50   │     5.62  │   -41.5  │ SZÁRAZ     │                                 │
+│   13    │    60   │     6.74  │   -29.8  │ SZÁRAZ     │                                 │
+│   13    │    70   │     7.87  │   -18.1  │ SZÁRAZ     │                                 │
+│   13    │    80   │     8.99  │    -6.4  │ FINOM      │ Holtsávon belül (v2.4-ben SZÁR.)│
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   16    │    50   │     6.81  │   -29.1  │ SZÁRAZ     │                                 │
+│   16    │    60   │     8.17  │   -15.0  │ SZÁRAZ     │                                 │
+│   16    │    70   │     9.53  │    -0.8  │ FINOM      │ Éppen a holtsávon belül         │
+│   16    │    80   │    10.89  │   +13.3  │ PÁRÁS      │ Párátlanítás szükséges          │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   19    │    50   │     8.17  │   -15.0  │ SZÁRAZ     │                                 │
+│   19    │    60   │     9.81  │    +2.0  │ FINOM      │                                 │
+│   19    │    70   │    11.44  │   +19.1  │ PÁRÁS      │ Csak 70% RH de túl párás!       │
+│   19    │    80   │    13.08  │   +36.1  │ PÁRÁS      │                                 │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────┤
+│   22    │    50   │     9.70  │    +0.9  │ FINOM      │ 50% RH de AH rendben!           │
+│   22    │    60   │    11.64  │   +21.1  │ PÁRÁS      │                                 │
+│   22    │    70   │    13.58  │   +41.3  │ PÁRÁS      │                                 │
+│   22    │    80   │    15.52  │   +61.5  │ PÁRÁS      │ Nagyon magas nedvességtartalom  │
+└─────────┴─────────┴───────────┴──────────┴────────────┴─────────────────────────────────┘
+
+Fő megfigyelések:
+  - 22°C/50% RH-nál: AH 9.70 g/m³, csak 1% cél felett → FINOM mód!
+  - 10°C/80% RH-nál: AH 7.51 g/m³, 22% cél alatt → SZÁRAZ mód!
+  - 13°C/80% RH-nál: AH 8.99 g/m³, 6% hiba (8.3%-on belül) → FINOM mód! (v2.4-ben SZÁRAZ volt!)
+  - A hőmérséklet önmagában nem határozza meg a módot - a PÁRATARTALOM igen!
+
+================================================================================
+                           ELLENŐRZÉSI LISTA
+================================================================================
+
+✓ PÁRATARTALOM-ELSŐDLEGES holtsáv működik:
+  - FINOM mód amikor AH a cél ±8.3%-án belül (8.81-10.41 g/m³)
+  - PÁRÁS/SZÁRAZ mód amikor AH ezen kívül
+  - Módot a PÁRATARTALOM határozza meg, nem a hőmérséklet
+
+✓ v2.5 KASZKÁD HIERARCHIA:
+  - Kamra (külső) SZÉLESEBB sávokkal mint Befújt (belső)
+  - AH: 1.9 g/m³ > 1.2 g/m³ ✓
+  - Hőm: 3.0°C > 2.3°C ✓
+
+✓ BIZTONSÁGOS INICIALIZÁLÁS:
+  - 32 másodperces init időszak újraindítás után
+  - Minden relé KI az inicializálás alatt
+  - Szabályozási logika fut de kimenetek tiltva
+  - Megakadályozza a hamis vészhelyzet válaszokat
+
+✓ Mód példák:
+  - 22°C/50% RH → AH 9.70 (1% cél felett) → FINOM mód
+  - 10°C/80% RH → AH 7.51 (22% cél alatt) → SZÁRAZ mód
+  - 13°C/80% RH → AH 8.99 (6% hiba, 8.3%-on belül) → FINOM mód (v2.4-ben SZÁRAZ!)
+
+✓ Külső levegő csak hűtésre:
+  - Használva 19°C/50%RH-nál amikor külső hideg (5°C vagy kevesebb)
+  - NEM használva párátlanításnál (még ha a külső hideg is)
+
+✓ Víz 0°C-on párátlanításhoz:
+  - Bypass KI amikor párátl. aktív (16°C/80%RH, 19°C/70%RH)
+
+✓ Párátlanítás + Fűtés kombináció:
+  - Mind HŰTÉS és FŰTÉS relék BE hideg párás feltételeknél
+  - Példa: 13°C/88%RH mindkettőt kapcsolná
+
+✓ Párásító vezérlés:
+  - BE amikor AH < indítási küszöb (8.81 g/m³)
+  - KI amikor AH >= cél (9.61 g/m³)
+  - Hiszterézis megakadályozza az oszcillációt
+
+✓ v2.5 Hőmérsékleti küszöb:
+  - Hűtés most >16.5°C-nál kapcsol (volt >16.0°C)
+  - Több hőmérsékleti toleranciát enged párátlanítás alatt
+
+✓ "Inkább Hideg Mint Száraz" logika:
+  - Fűtés tiltva amikor MÓD_SZÁRAZ és nincs párásító
+  - Csak ha kamra > 11°C (megelőzi a fagyást)
+  - Védi a terméket a visszafordíthatatlan száradási kártól
+
+================================================================================
+                              JELENTÉS VÉGE
+================================================================================
