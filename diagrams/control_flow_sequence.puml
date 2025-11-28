@@ -1,0 +1,170 @@
+@startuml Control Flow Sequence
+!theme plain
+skinparam sequenceMessageAlign center
+
+title Climate Control System - Main Control Flow
+
+actor "System Timer" as Timer
+participant "Main Controller\n(erlelo_1119.lua)" as Main
+participant "Sensor Init\n(erlelo_1119b.lua)" as SensorInit
+participant "External Sensor\n(erlelo_1119c.lua)" as ExtSensor
+participant "Chamber Humidity\n(erlelo_1119d.lua)" as ChamberHum
+database "Variables\n(Shared State)" as Vars
+participant "Relays\n(SBUS 52-66)" as Relays
+participant "Sensors" as Sensors
+
+== System Initialization ==
+
+Timer -> Main: onInit()
+activate Main
+Main -> Main: Initialize CustomDevice
+Main -> Vars: Reset error counters\n(variables 29-31 = 3)
+Main -> Relays: turn_off() all relays
+Main -> Main: Set slider values\nfrom targets
+Main -> Main: Initialize dew point\ncalculations
+Main -> Vars: Store initial state
+deactivate Main
+
+== Sensor Initialization & Validation ==
+
+Timer -> SensorInit: onInit()
+activate SensorInit
+SensorInit -> SensorInit: devcheck()\nValidate devices
+SensorInit -> Vars: Initialize weight\nmeasurement tables
+SensorInit -> SensorInit: suly_check()\nSetup weight arrays
+SensorInit -> Vars: Set error counter = 3
+deactivate SensorInit
+
+Timer -> ExtSensor: onInit()
+activate ExtSensor
+ExtSensor -> Vars: Set error counter = 3
+ExtSensor -> ExtSensor: Initialize statistics
+deactivate ExtSensor
+
+Timer -> ChamberHum: onInit()
+activate ChamberHum
+ChamberHum -> Vars: Set simulation = false
+ChamberHum -> Vars: Set error counter = 3
+deactivate ChamberHum
+
+== Normal Operation Cycle ==
+
+loop Every Poll Cycle
+    
+    Timer -> ExtSensor: poll()
+    activate ExtSensor
+    ExtSensor -> Sensors: Read external\ntemperature
+    ExtSensor -> Sensors: Read external\nhumidity
+    ExtSensor -> ExtSensor: mozgoatlag()\nMoving average filter
+    ExtSensor -> Vars: Update external T/RH\n(variables 7-8)
+    ExtSensor -> Vars: Update measurement\ntables (21-22)
+    deactivate ExtSensor
+    
+    Timer -> ChamberHum: poll()
+    activate ChamberHum
+    ChamberHum -> Sensors: Read chamber\ntemperature
+    ChamberHum -> Sensors: Read chamber\nhumidity
+    ChamberHum -> ChamberHum: mozgoatlag()\nFilter measurements
+    ChamberHum -> ChamberHum: calc_dew_point()\nCalculate psychrometrics
+    ChamberHum -> ChamberHum: calculate_absolute_humidity()
+    ChamberHum -> Vars: Update chamber T/RH\n(variables 1-2)
+    ChamberHum -> Vars: Update dew point\n& abs humidity (42)
+    ChamberHum -> Vars: Update measurement\ntables (19-20)
+    deactivate ChamberHum
+    
+    Timer -> SensorInit: onEvent()
+    activate SensorInit
+    SensorInit -> Sensors: Read weight\nsensors
+    SensorInit -> SensorInit: suly_szamol()\nCalculate averages
+    SensorInit -> Vars: Update weight data\n(variables 39-45)
+    SensorInit -> SensorInit: Check cycle time
+    deactivate SensorInit
+    
+    Timer -> Main: poll()
+    activate Main
+    Main -> Sensors: Read supply air\ntemperature
+    Main -> Sensors: Read supply air\nhumidity
+    Main -> Main: mozgoatlag()\nFilter supply air data
+    Main -> Vars: Read chamber T/RH\n(variables 1-2)
+    Main -> Vars: Read target T/RH\n(variables 3-4)
+    Main -> Vars: Read external T/RH\n(variables 7-8)
+    
+    Main -> Main: evaluate_outdoor_air_benefit()
+    activate Main
+    Main -> Main: Calculate temp\n& humidity deltas
+    Main -> Main: Determine if outdoor\nair helps control
+    Main -> Vars: Update supply air\ntargets (5-6)
+    deactivate Main
+    
+    Main -> Main: ah_dp_befujt_szamol()
+    activate Main
+    Main -> Main: Calculate supply air\ndew point
+    Main -> Main: Calculate target\nabsolute humidity
+    deactivate Main
+    
+    Main -> Main: Control Logic
+    activate Main
+    
+    alt Temperature too high
+        Main -> Main: setrelay(relay_cool, true)
+        Main -> Relays: Turn ON cooling (52)
+        Main -> Main: setrelay(relay_warm, false)
+        Main -> Relays: Turn OFF heating (60)
+    else Temperature too low
+        Main -> Main: setrelay(relay_warm, true)
+        Main -> Relays: Turn ON heating (60)
+        Main -> Main: setrelay(relay_cool, false)
+        Main -> Relays: Turn OFF cooling (52)
+    else Temperature in range
+        Main -> Relays: Turn OFF heating\n& cooling
+    end
+    
+    alt Humidity too low
+        Main -> Main: setrelay(relay_humidifier, true)
+        Main -> Relays: Turn ON humidifier (66)
+    else Humidity too high
+        Main -> Main: setrelay(relay_bypass_open, true)
+        Main -> Relays: Open bypass (64)
+        Main -> Main: Increase air flow
+        Main -> Relays: Adjust main fan (65)
+    else Humidity in range
+        Main -> Relays: Normal ventilation
+    end
+    
+    alt Outdoor air beneficial
+        Main -> Main: setrelay(relay_add_air_max, true)
+        Main -> Relays: Maximum outdoor\nair intake (61)
+    else Outdoor air not beneficial
+        Main -> Main: setrelay(relay_add_air_save, true)
+        Main -> Relays: Save energy mode (63)
+    end
+    
+    deactivate Main
+    
+    Main -> Main: updateText()\nUpdate UI displays
+    Main -> Vars: Store control state
+    Main -> Vars: Update last_sent_table (28)
+    deactivate Main
+    
+end
+
+== Error Handling ==
+
+alt Sensor Error Detected
+    Timer -> Main: offline()
+    activate Main
+    Main -> Main: Set status = 'offline'
+    Main -> Main: clear()
+    Main -> Relays: Safe mode\n(turn off critical relays)
+    Main -> Vars: Increment error counters
+    deactivate Main
+    
+    Timer -> Main: online()
+    activate Main
+    Main -> Main: Set status = 'online'
+    Main -> Vars: Reset error counter = 3
+    Main -> Main: Resume normal operation
+    deactivate Main
+end
+
+@enduml
