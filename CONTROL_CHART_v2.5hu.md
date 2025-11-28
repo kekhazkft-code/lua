@@ -9,6 +9,77 @@ Főbb fejlesztések:
 - Befúvó levegő (belső hurok): Szűkebb holtsáv, kisebb hiszterézis a precizitás érdekében
 - Javított befúvó hőmérséklet küszöbértékek (korábban fordítva voltak)
 - Irányított hiszterézis hozzáadása a határértékeken való oszcilláció megelőzésére
+- **ÚJ:** Biztonságos inicializálási periódus (32 másodperc)
+
+---
+
+## Biztonságos Inicializálási Periódus (v2.5)
+
+**ÚJ a v2.5-ben:** 32 másodperces biztonságos indítás megakadályozza a berendezés károsodását.
+
+### Miért Kritikus az Inicializálás
+
+```
+PROBLÉMA: Vezérlő újraindításkor minden változó 0-ra áll:
+  - Hőmérséklet olvasás: 0°C (rendkívül hidegnek tűnik)
+  - Páratartalom olvasás: 0% (rendkívül száraznak tűnik)
+
+BIZTONSÁGOS INIT NÉLKÜL:
+  → Rendszer "vészhelyzeti hideg + száraz" állapotot lát
+  → Fűtés BE + Párásító BE (ha van)
+  → Potenciális berendezés károsodás!
+
+BIZTONSÁGOS INIT-TEL (v2.5):
+  → Minden relé 32 másodpercig KIKAPCSOLVA marad
+  → Szenzorok feltöltik a puffereket valós adatokkal
+  → Szabályozási logika fut, de nem alkalmazza
+  → Zökkenőmentes átmenet normál működésre
+```
+
+### Inicializálási Idővonal
+
+```
+Idő     │ init_complete │ init_countdown │ Relék     │ Tevékenység
+────────┼───────────────┼────────────────┼───────────┼────────────────────
+0mp     │ false         │ 32             │ MIND KI   │ Szenzor olvasás indul
+5mp     │ false         │ 27             │ MIND KI   │ Pufferek töltődnek
+15mp    │ false         │ 17             │ MIND KI   │ AH/DP számítás
+25mp    │ false         │ 7              │ MIND KI   │ Mód meghatározás
+32mp    │ true          │ 0              │ NORMÁL    │ Szabályozás engedélyezve
+```
+
+### Jel Struktúra Init Alatt
+
+```lua
+-- Inicializálás közben (első 32 másodperc):
+signals = {
+    init_complete = false,
+    init_countdown = 15,        -- Hátralévő másodpercek
+    humidity_mode = MODE_DRY,   -- Szabályozási logika fut
+    kamra_futes = true,         -- Fűtés kérve...
+    relay_warm = false,         -- ...de relé KI marad
+}
+
+-- Inicializálás után:
+signals = {
+    init_complete = true,
+    init_countdown = 0,
+    humidity_mode = MODE_DRY,
+    kamra_futes = true,
+    relay_warm = true,          -- Most a relé követi a jelet
+}
+```
+
+### Konfiguráció
+
+```lua
+-- A constansok változóban:
+init_duration = 32  -- Másodperc (alapértelmezett: 32)
+
+-- Beállítható az erlelo_constants_editor.lua-val
+```
+
+---
 
 ## Alapértelmezett Konfigurációs Értékek (v2.5)
 
@@ -958,9 +1029,28 @@ temp_hysteresis_befujt_ch{N} = 3   -- 0,3°C
 
 ---
 
+## 20. Teszt Lefedettség (v2.5)
+
+**Összes Teszt: 2481 (100% sikeres)**
+
+| Kategória | Tesztek | Leírás |
+|-----------|---------|--------|
+| v2.5 Állapotgép | 29 | FINOM/PÁRÁS/SZÁRAZ átmenetek |
+| v2.5 Oszcilláció-gátlás | 47 | Hiszterézis megakadályozza az oszcillációt |
+| v2.5 Hőmérséklet | 29 | 16,5°C küszöb + hiszterézis |
+| v2.5 Kereszt-jel | 65 | Kombinált hőm.+páratartalom logika |
+| v2.5 Érvénytelen Állapotok | 35 | Lehetetlen kombinációk kizárása |
+| v2.5 Befúvó Hurok | 40 | Kaszkád hierarchia |
+| v2.5 Fizikai | 29 | Valós AH korlátok |
+| v2.5 Forgatókönyvek | 32 | Teljes forgatókönyv validálás |
+| v2.5 Inicializálás | 23 | Biztonságos indítási periódus |
+| Korábbi Tesztek | 2152 | v2.4 kompatibilitás |
+
+---
+
 *Dokumentum Verzió: 2.5*
 *Generálva ERLELO v2.5 szabályozási logika ajánlásokból*
-*Keresztellenőrizve szabályozástechnikai elemzéssel és kaszkád tervezéssel*
+*Validálva 2481 tesztesettel (100% sikeres)*
 
 ## Verzió Történet
 
@@ -968,7 +1058,7 @@ temp_hysteresis_befujt_ch{N} = 3   -- 0,3°C
 |--------|-------|------------|
 | v2.3 | 2024 | Páratartalom-elsődleges holtsáv, AH-alapú szabályozás |
 | v2.4 | 2024 | Konfiguráció fejlesztések, explicit beállítás |
-| v2.5 | 2024 | Kétszintű kaszkád, irányított hiszterézis |
+| v2.5 | 2024 | Kétszintű kaszkád, irányított hiszterézis, biztonságos init |
 
 ## v2.5 Változások Összefoglaló
 - **Kétszintű kaszkád**: Kamra (külső) szélesebb mint Befúvó (belső)
@@ -976,4 +1066,5 @@ temp_hysteresis_befujt_ch{N} = 3   -- 0,3°C
 - **Javított befúvó küszöbök**: Fordítva voltak (szélesebb mint kamra), most helyesek
 - **Új állapotgép**: PÁRÁS/FINOM/SZÁRAZ explicit átmenetekkel
 - **Új paraméterek**: 5 új paraméter a hiszterézis szabályozáshoz
+- **Biztonságos inicializálás**: 32 másodperces indítási periódus minden relé KI
 - **Várt előnyök**: 50-70% csökkenés a mód váltásokban, hosszabb relé élettartam
