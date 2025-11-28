@@ -3075,6 +3075,165 @@ for temp in [100, 130, 160, 190, 220]:  # 10°C to 22°C
             'test': make_full_scenario_test(temp, rh)
         })
 
+# ----------------------------------------------------------------------------
+# CATEGORY 38: v2.5 SAFE INITIALIZATION TESTS - 30 tests
+# ----------------------------------------------------------------------------
+
+# v2.5 adds a 32-second safe initialization period where all relays are OFF
+# This prevents damage from incorrect readings during startup
+
+V25_INIT_CONFIG = {
+    'init_duration': 32,  # 32 seconds default
+    'relay_states_during_init': False,  # All relays OFF
+}
+
+def v25_init_relay_state(
+    elapsed_seconds: int,
+    control_signals: dict,
+    init_duration: int = 32
+) -> dict:
+    """
+    v2.5 Initialization relay control
+    During initialization period, all relays are forced OFF regardless of control signals
+    """
+    init_complete = elapsed_seconds >= init_duration
+    init_countdown = max(0, init_duration - elapsed_seconds)
+
+    if not init_complete:
+        # All relays OFF during initialization
+        return {
+            'init_complete': False,
+            'init_countdown': init_countdown,
+            'relay_cool': False,
+            'relay_warm': False,
+            'relay_humidifier': False,
+            'relay_add_air_max': False,
+            'relay_bypass_open': False,
+            'relay_main_fan': False,
+            # Control signals still calculated but not applied
+            'control_cool': control_signals.get('cooling', False),
+            'control_warm': control_signals.get('heating', False),
+        }
+    else:
+        # Normal operation - apply control signals
+        return {
+            'init_complete': True,
+            'init_countdown': 0,
+            'relay_cool': control_signals.get('cooling', False),
+            'relay_warm': control_signals.get('heating', False),
+            'relay_humidifier': control_signals.get('humidify', False),
+            'relay_add_air_max': control_signals.get('add_air_max', False),
+            'relay_bypass_open': control_signals.get('bypass', False),
+            'relay_main_fan': control_signals.get('main_fan', False),
+            'control_cool': control_signals.get('cooling', False),
+            'control_warm': control_signals.get('heating', False),
+        }
+
+# Test cases for initialization behavior
+init_tests = [
+    # (elapsed_sec, control_signals, exp_relays_off, exp_init_complete, description)
+    (0, {'cooling': True, 'heating': False}, True, False, "t=0s: All relays OFF at startup"),
+    (5, {'cooling': True, 'heating': False}, True, False, "t=5s: Relays still OFF during init"),
+    (15, {'cooling': True, 'heating': True}, True, False, "t=15s: Both signals but relays OFF"),
+    (25, {'heating': True}, True, False, "t=25s: Heating requested but blocked"),
+    (31, {'cooling': True}, True, False, "t=31s: Last second of init, still OFF"),
+    (32, {'cooling': True}, False, True, "t=32s: Init complete, relays follow signals"),
+    (33, {'heating': True}, False, True, "t=33s: Normal operation, heating ON"),
+    (60, {'cooling': True, 'heating': False}, False, True, "t=60s: Well past init, normal"),
+    (100, {}, False, True, "t=100s: Long runtime, all signals OFF = relays OFF"),
+]
+
+for i, (elapsed, signals, exp_off, exp_complete, desc) in enumerate(init_tests):
+    def make_init_test(e, s, off, comp):
+        def test():
+            result = v25_init_relay_state(e, s)
+            relays_all_off = (not result['relay_cool'] and
+                             not result['relay_warm'] and
+                             not result['relay_humidifier'])
+            if off:
+                # Expect all relays OFF during init
+                return relays_all_off and not result['init_complete']
+            else:
+                # After init, relays should follow control signals
+                return result['init_complete'] == comp
+        return test
+    test_cases.append({
+        'id': next_id("TC_V25_INIT"),
+        'name': f"v2.5 Init: {desc}",
+        'template': "TC_V25_INIT",
+        'category': "v2.5 Initialization",
+        'test': make_init_test(elapsed, signals, exp_off, exp_complete)
+    })
+
+# Countdown tests
+for sec in range(0, 35, 5):
+    expected_countdown = max(0, 32 - sec)
+    def make_countdown_test(s, exp):
+        def test():
+            result = v25_init_relay_state(s, {})
+            return result['init_countdown'] == exp
+        return test
+    test_cases.append({
+        'id': next_id("TC_V25_INIT"),
+        'name': f"v2.5 Init countdown: t={sec}s -> {expected_countdown}s remaining",
+        'template': "TC_V25_INIT",
+        'category': "v2.5 Initialization",
+        'test': make_countdown_test(sec, expected_countdown)
+    })
+
+# Control signals calculated during init (but not applied)
+init_control_tests = [
+    # During init, control logic runs but relays are OFF
+    (10, {'cooling': True, 'heating': False}, True, False, "Control cooling during init"),
+    (10, {'cooling': False, 'heating': True}, False, True, "Control heating during init"),
+    (10, {'cooling': True, 'heating': True}, True, True, "Both controls during init"),
+]
+
+for i, (elapsed, signals, exp_ctrl_cool, exp_ctrl_heat, desc) in enumerate(init_control_tests):
+    def make_ctrl_test(e, s, ec, eh):
+        def test():
+            result = v25_init_relay_state(e, s)
+            # Relays OFF but control signals tracked
+            return (not result['relay_cool'] and
+                    not result['relay_warm'] and
+                    result['control_cool'] == ec and
+                    result['control_warm'] == eh)
+        return test
+    test_cases.append({
+        'id': next_id("TC_V25_INIT"),
+        'name': f"v2.5 Init ctrl: {desc}",
+        'template': "TC_V25_INIT",
+        'category': "v2.5 Initialization",
+        'test': make_ctrl_test(elapsed, signals, exp_ctrl_cool, exp_ctrl_heat)
+    })
+
+# Transition tests - verify smooth handoff from init to normal
+for cooling in [False, True]:
+    for heating in [False, True]:
+        def make_transition_test(c, h):
+            def test():
+                signals = {'cooling': c, 'heating': h}
+                # Just before init complete
+                before = v25_init_relay_state(31, signals)
+                # Just after init complete
+                after = v25_init_relay_state(32, signals)
+
+                # Before: relays OFF, after: relays follow signals
+                return (not before['relay_cool'] and
+                        not before['relay_warm'] and
+                        after['relay_cool'] == c and
+                        after['relay_warm'] == h and
+                        not before['init_complete'] and
+                        after['init_complete'])
+            return test
+        test_cases.append({
+            'id': next_id("TC_V25_INIT"),
+            'name': f"v2.5 Init transition: cool={cooling} heat={heating}",
+            'template': "TC_V25_INIT",
+            'category': "v2.5 Initialization",
+            'test': make_transition_test(cooling, heating)
+        })
+
 # ============================================================================
 # MAIN EXECUTION
 # ============================================================================

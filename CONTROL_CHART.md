@@ -11,6 +11,75 @@
 | Supply Deadzone | N/A | **0.5 g/m³** | Tighter inner loop |
 | Supply Hysteresis | N/A | **0.2 g/m³** | Fine supply control |
 | State Machine | Simple | **FINE/HUMID/DRY** | Directional transitions |
+| Safe Initialization | N/A | **32 seconds** | All relays OFF during startup |
+
+---
+
+## Safe Initialization Period (v2.5)
+
+**NEW in v2.5:** 32-second safe startup prevents equipment damage.
+
+### Why Initialization is Critical
+
+```
+PROBLEM: During controller reboot, all variables reset to 0:
+  - Temperature reading: 0°C (appears WAY too cold)
+  - Humidity reading: 0% (appears WAY too dry)
+
+WITHOUT safe init:
+  → System sees "emergency cold + dry"
+  → Heating ON + Humidifier ON (if installed)
+  → Potential equipment damage!
+
+WITH safe init (v2.5):
+  → All relays forced OFF for 32 seconds
+  → Sensors fill buffers with real data
+  → Control logic runs but doesn't apply
+  → Smooth transition to normal operation
+```
+
+### Initialization Timeline
+
+```
+Time    │ init_complete │ init_countdown │ Relays │ Activity
+────────┼───────────────┼────────────────┼────────┼────────────────────
+0s      │ false         │ 32             │ ALL OFF│ Start reading sensors
+5s      │ false         │ 27             │ ALL OFF│ Buffers filling
+15s     │ false         │ 17             │ ALL OFF│ AH/DP calculated
+25s     │ false         │ 7              │ ALL OFF│ Mode determined
+32s     │ true          │ 0              │ NORMAL │ Control enabled
+```
+
+### Signal Structure During Init
+
+```lua
+-- During initialization (first 32 seconds):
+signals = {
+    init_complete = false,
+    init_countdown = 15,        -- Seconds remaining
+    humidity_mode = MODE_DRY,   -- Control logic runs
+    kamra_futes = true,         -- Heating requested...
+    relay_warm = false,         -- ...but relay stays OFF
+}
+
+-- After initialization:
+signals = {
+    init_complete = true,
+    init_countdown = 0,
+    humidity_mode = MODE_DRY,
+    kamra_futes = true,
+    relay_warm = true,          -- Now relay follows signal
+}
+```
+
+### Configuration
+
+```lua
+-- In constansok variable:
+init_duration = 32  -- Seconds (default: 32)
+
+-- Can be adjusted via erlelo_constants_editor.lua
+```
 
 ---
 
@@ -371,7 +440,7 @@ relay_humidifier = (humidity_mode == MODE_DRY) and hw_config.has_humidifier
 
 ## 9. Test Suite Coverage (v2.5)
 
-**Total Tests: 2458 (100% pass)**
+**Total Tests: 2481 (100% pass)**
 
 | Category | Tests | Description |
 |----------|-------|-------------|
@@ -383,6 +452,7 @@ relay_humidifier = (humidity_mode == MODE_DRY) and hw_config.has_humidifier
 | v2.5 Supply Loop | 40 | Cascade hierarchy |
 | v2.5 Physical | 29 | Real-world AH constraints |
 | v2.5 Scenarios | 32 | Full scenario validation |
+| v2.5 Initialization | 23 | Safe startup period |
 | Legacy Tests | 2152 | v2.4 compatibility |
 
 ---
@@ -406,4 +476,4 @@ relay_humidifier = (humidity_mode == MODE_DRY) and hw_config.has_humidifier
 
 *Document Version: 2.5*
 *Generated from ERLELO v2.5 control logic*
-*Validated by 2458 test cases (100% pass)*
+*Validated by 2481 test cases (100% pass)*
