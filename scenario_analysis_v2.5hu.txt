@@ -1,0 +1,588 @@
+# Erlelo Szabályozási Logika - Forgatókönyv Elemzés Jelentés v2.5
+# Generálva: 2024 November
+# PÁRATARTALOM-ELSŐDLEGES SZABÁLYOZÁS KÉTSZINTŰ KASZKÁDDAL - "Inkább hideg mint száraz"
+# Célérték: 15,0°C, 75,0% RH | AH Holtsáv: ±0,8 g/m³ (8,3%) | Külső küszöb: 5,0°C
+#
+# ⚠️ NEM MEGKERÜLHETŐ HŐMÉRSÉKLET KORLÁT:
+# Ha kamra hőm. > cél + deltahi (16,5°C) → KÖTELEZŐ HŰTÉS (víz vagy külső levegő)
+# Ez független a páratartalom módtól - kemény biztonsági korlát!
+#
+# v2.5 VÁLTOZÁSOK: Kétszintű kaszkád szabályozás hozzáadva irányított hiszterézissel
+#   - Kamra (külső hurok): szélesebb holtsáv (0,8 g/m³), hiszterézis (0,3 g/m³)
+#   - Befúvó (belső hurok): szűkebb holtsáv (0,5 g/m³), hiszterézis (0,2 g/m³)
+#   - Javított befúvó hőm. küszöbök (2,0→1,0°C, 1,5→1,0°C)
+#   - Kamra hőm. küszöb: 16,5°C (korábban 16,0°C)
+
+================================================================================
+                         v2.5 PARAMÉTER VÁLTOZÁSOK
+================================================================================
+
+┌─────────────────────────────────────┬───────────┬───────────┬─────────────────┐
+│ Paraméter                           │ v2.4      │ v2.5      │ Változás        │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ PÁRATARTALOM - KAMRA (Külső Hurok)  │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ ah_deadzone_kamra                   │ 50        │ 80        │ +60% szélesebb  │
+│ (tárolva 0,01 g/m³-ként)            │(0,5 g/m³) │(0,8 g/m³) │                 │
+│                                     │           │           │                 │
+│ ah_hysteresis_kamra                 │ -         │ 30        │ ÚJ              │
+│ (tárolva 0,01 g/m³-ként)            │           │(0,3 g/m³) │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ PÁRATARTALOM - BEFÚVÓ (Belső Hurok) │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ ah_deadzone_befujt                  │ -         │ 50        │ ÚJ              │
+│ (tárolva 0,01 g/m³-ként)            │           │(0,5 g/m³) │                 │
+│                                     │           │           │                 │
+│ ah_hysteresis_befujt                │ -         │ 20        │ ÚJ              │
+│ (tárolva 0,01 g/m³-ként)            │           │(0,2 g/m³) │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ HŐMÉRSÉKLET - KAMRA (Külső Hurok)   │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ deltahi_kamra_homerseklet           │ 10        │ 15        │ +50% szélesebb  │
+│ (tárolva 0,1°C-ként)                │ (1,0°C)   │ (1,5°C)   │                 │
+│                                     │           │           │                 │
+│ deltalo_kamra_homerseklet           │ 10        │ 10        │ változatlan     │
+│ (tárolva 0,1°C-ként)                │ (1,0°C)   │ (1,0°C)   │                 │
+│                                     │           │           │                 │
+│ temp_hysteresis_kamra               │ -         │ 5         │ ÚJ              │
+│ (tárolva 0,1°C-ként)                │           │ (0,5°C)   │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ HŐMÉRSÉKLET - BEFÚVÓ (Belső Hurok)  │           │           │                 │
+├─────────────────────────────────────┼───────────┼───────────┼─────────────────┤
+│ deltahi_befujt_homerseklet          │ 20        │ 10        │ -50% SZŰKEBB    │
+│ (tárolva 0,1°C-ként)                │ (2,0°C)   │ (1,0°C)   │ (fordítva volt!)│
+│                                     │           │           │                 │
+│ deltalo_befujt_homerseklet          │ 15        │ 10        │ -33% SZŰKEBB    │
+│ (tárolva 0,1°C-ként)                │ (1,5°C)   │ (1,0°C)   │ (fordítva volt!)│
+│                                     │           │           │                 │
+│ temp_hysteresis_befujt              │ -         │ 3         │ ÚJ              │
+│ (tárolva 0,1°C-ként)                │           │ (0,3°C)   │                 │
+└─────────────────────────────────────┴───────────┴───────────┴─────────────────┘
+
+KASZKÁD HIERARCHIA ELLENŐRZÉS:
+  AH:   Kamra 1,9 g/m³ > Befúvó 1,2 g/m³  ✓ (arány 1,58)
+  Hőm:  Kamra 3,0°C > Befúvó 2,3°C        ✓ (arány 1,30)
+
+================================================================================
+                              VEZETŐI ÖSSZEFOGLALÓ
+================================================================================
+
+## PÁRATARTALOM-ELSŐDLEGES Szabályozási Filozófia
+A rendszer a PÁRATARTALMAT helyezi előtérbe a hőmérséklettel szemben mert:
+  - Túl száraz → VISSZAFORDÍTHATATLAN termékkárosodás (felület repedés, kéregképződés)
+  - Túl párás → Penészesedési kockázat, kritikus gyorsan kezelni
+  - Túl hideg → Csak lassítja a folyamatot, TELJESEN HELYREÁLLÍTHATÓ
+  - A termék egyensúlya az Abszolút Páratartalomtól (AH) függ, nem a hőmérséklettől
+
+## Teszt Paraméterek (v2.5)
+- Kamra Hőmérséklet Tartomány: 10°C-tól 22°C-ig (3°C lépés)
+- Kamra Páratartalom Tartomány: 50%-tól 80% RH-ig (10% lépés)
+- Külső Hőmérséklet Tartomány: -5°C-tól 25°C-ig (5°C lépés)
+- Célérték: 15,0°C, 75,0% RH (AH = 9,61 g/m³)
+- AH Holtsáv (Kamra): ±0,8 g/m³ (célérték 8,3%-a)
+- AH Hiszterézis (Kamra): 0,3 g/m³
+- Párásító Indítási AH: 8,81 g/m³ (holtsáv határnál)
+- Párátlanítási Küszöb AH: 10,41 g/m³ (holtsáv határnál)
+- Összes Tesztelt Forgatókönyv: 140
+
+## Szabályozási Módok Összefoglaló (v2.5 - PÁRATARTALOM-ELSŐDLEGES)
+┌─────────────┬───────┬─────────────────────────────────────────────────────┐
+│ Mód         │ Darab │ Feltétel                                            │
+├─────────────┼───────┼─────────────────────────────────────────────────────┤
+│ PÁRÁS       │   35  │ AH > 10,41 g/m³ (párátlanítás szükséges)            │
+│ FINOM       │   42  │ AH 8,81-10,41 g/m³ (párat. OK, hőm. finomhangolás)  │
+│ SZÁRAZ      │   63  │ AH < 8,81 g/m³ (párásítás szükséges)                │
+└─────────────┴───────┴─────────────────────────────────────────────────────┘
+
+## Szabályozási Műveletek Összefoglaló
+┌─────────────────────┬───────┬─────────────────────────────────────────┐
+│ Művelet             │ Darab │ Feltételek                              │
+├─────────────────────┼───────┼─────────────────────────────────────────┤
+│ Hűtés szükséges     │   56  │ Kamra > 16,5°C (cél + 1,5)              │
+│ Fűtés szükséges     │   56  │ Kamra < 14°C (cél - 1,0)                │
+│ Párátlanítás        │   35  │ AH > 10,41 g/m³ (szélesebb holtsáv)     │
+│ Párásítás           │   63  │ AH < 8,81 g/m³ (szélesebb holtsáv)      │
+│ Külső levegő haszn. │   13  │ Csak hűtés + kamra-külső ≥ 5°C          │
+│ Vízhűtés használva  │   50  │ Párátlan. VAGY (hűtés + külső nem seg.) │
+│ Párátlan.+Fűt.kombi │    7  │ Hideg kamra + magas páratartalom        │
+└─────────────────────┴───────┴─────────────────────────────────────────┘
+
+## Kulcs Relé Állapotok Forgatókönyvenként
+┌────────────────────────┬──────┬──────┬─────┬─────┬───────┬─────────────────────────┐
+│ Forgatókönyv           │ HŰTÉS│FŰTÉS │ LEV │ BYP │PÁRÁSÍT│ Példa                   │
+├────────────────────────┼──────┼──────┼─────┼─────┼───────┼─────────────────────────┤
+│ Fűtés + Párásítás      │ KI   │  BE  │ KI  │ KI  │  BE   │ 10°C, 50% RH (száraz!)  │
+│ Csak hűtés (víz)       │  BE  │ KI   │ KI  │  BE │ KI    │ 19°C, 50% RH, kül 15°C  │
+│ Hűtés (külső levegő)   │ KI   │ KI   │  BE │  BE │ KI    │ 19°C, 50% RH, kül 5°C   │
+│ Csak párátlanítás      │  BE  │ KI   │ KI  │ KI  │ KI    │ 16°C, 80% RH            │
+│ Párátlanítás + Hűtés   │  BE  │ KI   │ KI  │ KI  │ KI    │ 19°C, 70% RH            │
+│ Párátlanítás + Fűtés   │  BE  │  BE  │ KI  │ KI  │ KI    │ 13°C, 88% RH            │
+│ Csak párásítás         │ KI   │ KI   │ KI  │ KI  │  BE   │ 16°C, 60% RH            │
+└────────────────────────┴──────┴──────┴─────┴─────┴───────┴─────────────────────────┘
+
+* Párásító BE attól függ hogy has_humidifier=true a kamrára
+
+================================================================================
+                    KÜLSŐ LEVEGŐ HASZNÁLATI STRATÉGIA
+================================================================================
+
+**Külső levegő CSAK hűtésre használható, SOHA párátlanításra**
+
+A külső levegő nem tudja eltávolítani a nedvességet - a párátlanítás hideg vizes
+hőcserélő tekercset igényel a kondenzációhoz. A bypass-nak ZÁRVA kell lennie
+párátlanítás közben.
+
+Döntési logika:
+┌────────────────────────────────────────────────────────────────────────────┐
+│                                                                            │
+│  Kell hűteni?  ──NEM──►  Nincs külső levegő                               │
+│       │                                                                    │
+│      IGEN                                                                  │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Kell párátlanítani?  ──IGEN──►  CSAK vízhűtés (0°C, bypass ZÁRVA)        │
+│       │                                                                    │
+│      NEM (csak hűtés)                                                      │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Kamra - Külső ≥ 5°C?  ──IGEN──►  KÜLSŐ LEVEGŐ használata (ingyenes hűtés)│
+│       │                                                                    │
+│      NEM                                                                   │
+│       │                                                                    │
+│       ▼                                                                    │
+│  Vízhűtés (8°C, bypass NYITVA)                                            │
+│                                                                            │
+└────────────────────────────────────────────────────────────────────────────┘
+
+| Feltétel | Vízhűtés | Külső Levegő | Bypass | Miért |
+|----------|----------|--------------|--------|-------|
+| Párátlanítás | IGEN (0°C) | NEM | ZÁRVA | Hideg tekercs kondenzál nedvességet |
+| Hűtés, külső 5°C+-szal hidegebb | NEM | IGEN | NYITVA | Ingyenes hűtés |
+| Hűtés, külső nem elég hideg | IGEN (8°C) | NEM | NYITVA | Mechanikus hűtés kell |
+
+================================================================================
+                    HOLTSÁV & HISZTERÉZIS VIZUALIZÁCIÓ (v2.5)
+================================================================================
+
+KAMRA AH SZABÁLYOZÁSI SÁV (Elsődleges - Külső Hurok)
+══════════════════════════════════════════════════════════════════════════════
+
+                      ah_deadzone_kamra (±0,8 g/m³)
+       ◄──────────────────────────────────────────────────────►
+       │                                                       │
+ SZÁRAZ│                       FINOM                           │  PÁRÁS
+ ──────┼───────────────────────┼───────────────────────────────┼──────────
+       │                       │                               │
+     8,81                    9,61                            10,41
+       │                   (célérték)                          │
+       │    ┌──────────────────┼──────────────────┐           │
+       │    │                  │                  │           │
+       │  9,31               9,61               9,91          │
+       │    │                  │                  │           │
+       │    │◄── hiszterézis ─►│◄── hiszterézis ─►│           │
+       │         (0,3)                  (0,3)                 │
+
+  Állapot átmenetek hiszterézissel:
+  ├─ FINOM → PÁRÁS:  +0,8 határ átlépése (AH > 10,41)
+  ├─ PÁRÁS → FINOM:  El kell érni cél - 0,3 = 9,31 (nem csak 10,41 alá)
+  ├─ FINOM → SZÁRAZ: -0,8 határ átlépése (AH < 8,81)
+  └─ SZÁRAZ → FINOM: El kell érni cél + 0,3 = 9,91 (nem csak 8,81 fölé)
+
+KAMRA HŐMÉRSÉKLET SZABÁLYOZÁSI SÁV (Másodlagos - Külső Hurok)
+══════════════════════════════════════════════════════════════════════════════
+
+            deltalo (-1,0°C)              deltahi (+1,5°C)
+       ◄────────────────────┼────────────────────────────►
+       │                    │                            │
+ FŰTÉS │                CÉLÉRTÉK                         │  HŰTÉS
+SEGÍT  │                  15,0°C                         │ FELÜLBÍR.
+ ──────┼────────────────────┼────────────────────────────┼──────────
+       │                    │                            │
+     14,0                 15,0                         16,5
+       │                    │                            │
+       │              ┌─────┼─────┐                      │
+       │            14,5    │   16,0                     │
+       │              │     │     │                      │
+       │              │◄────┼────►│                      │
+       │                hiszterézis                      │
+       │                 (0,5°C)                         │
+
+  Megjegyzés: Aszimmetrikus - több tolerancia magas hőm.-re (+1,5°C) mint alacsonyra (-1,0°C)
+  Mert: A párátlanítás gyakran kissé emeli a hőmérsékletet
+
+BEFÚVÓ AH SZABÁLYOZÁSI SÁV (Elsődleges - Belső Hurok) - SZŰKEBB
+══════════════════════════════════════════════════════════════════════════════
+
+                 ah_deadzone_befujt (±0,5 g/m³)
+             ◄─────────────────────────────────────►
+             │                                     │
+   ──────────┼─────────────────┼───────────────────┼──────────
+             │                 │                   │
+           9,11             9,61                 10,11
+             │             (célérték)              │
+             │        ┌───────┼───────┐           │
+             │      9,41      │     9,81          │
+             │        │◄──────┼──────►│           │
+             │          hiszterézis               │
+             │           (0,2)                    │
+
+  Szűkebb mint a kamra: 1,2 g/m³ teljes vs 1,9 g/m³
+  Arány: 0,63 (belső a külső 63%-a) ✓
+
+BEFÚVÓ HŐMÉRSÉKLET SZABÁLYOZÁSI SÁV (Másodlagos - Belső Hurok) - SZŰKEBB
+══════════════════════════════════════════════════════════════════════════════
+
+             deltalo (-1,0°C)    deltahi (+1,0°C)
+             ◄────────────────┼────────────────►
+             │                │                │
+   ──────────┼────────────────┼────────────────┼──────────
+             │                │                │
+           14,0            15,0              16,0
+             │              (AP)              │
+             │       ┌────────┼────────┐      │
+             │     14,7       │      15,3     │
+             │       │◄───────┼───────►│      │
+             │          hiszterézis          │
+             │           (0,3°C)             │
+
+  Szimmetrikus és szűkebb mint a kamra
+  Teljes sáv: 2,3°C vs kamra 3,0°C ✓
+
+================================================================================
+                         RÉSZLETES FORGATÓKÖNYV MÁTRIX
+================================================================================
+
+Kamra  │ Kamra  │ Külső  │ AH akt │ AH hiba%│ Mód        │ hűtés│párat-│fűtés │párás│ KülElő │ Relék: HŰTÉS FŰTÉS LEV  BYP  PÁR
+  °C   │   RH%  │   °C   │  g/m³  │         │            │      │lanít │      │     │        │
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   10  │    50  │     -5  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    50  │      0  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    50  │      5  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    50  │     10  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    50  │     15  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    50  │     20  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    50  │     25  │    4,70 │    51%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │     -5  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │      0  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │      5  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │     10  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │     15  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │     20  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    60  │     25  │    5,64 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │     -5  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │      0  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │      5  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │     10  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │     15  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │     20  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    70  │     25  │    6,57 │    32%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │     -5  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │      0  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │      5  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │     10  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │     15  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │     20  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   10  │    80  │     25  │    7,51 │    22%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   13  │    50  │     -5  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    50  │      0  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    50  │      5  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    50  │     10  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    50  │     15  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    50  │     20  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    50  │     25  │    5,67 │    41%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │     -5  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │      0  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │      5  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │     10  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │     15  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │     20  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    60  │     25  │    6,80 │    29%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │     -5  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │      0  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │      5  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │     10  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │     15  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │     20  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    70  │     25  │    7,93 │    17%   │ AGRESSZÍV  │      │      │  ✓  │  ✓  │       │ KI    BE  KI   KI   BE
+   13  │    80  │     -5  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+   13  │    80  │      0  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+   13  │    80  │      5  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+   13  │    80  │     10  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+   13  │    80  │     15  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+   13  │    80  │     20  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+   13  │    80  │     25  │    9,07 │     6%   │ FINOM      │      │      │  ✓  │     │       │ KI    BE  KI   KI   KI
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   16  │    50  │     -5  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    50  │      0  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    50  │      5  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    50  │     10  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    50  │     15  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    50  │     20  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    50  │     25  │    6,81 │    29%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │     -5  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │      0  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │      5  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │     10  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │     15  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │     20  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    60  │     25  │    8,17 │    15%   │ AGRESSZÍV  │      │      │     │  ✓  │       │ KI   KI   KI   KI   BE
+   16  │    70  │     -5  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    70  │      0  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    70  │      5  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    70  │     10  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    70  │     15  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    70  │     20  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    70  │     25  │    9,53 │     1%   │ FINOM      │      │      │     │     │       │ KI   KI   KI   KI   KI
+   16  │    80  │     -5  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   16  │    80  │      0  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   16  │    80  │      5  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   16  │    80  │     10  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   16  │    80  │     15  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   16  │    80  │     20  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   16  │    80  │     25  │   10,89 │    13%   │ AGRESSZÍV  │      │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   19  │    50  │     -5  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │   ✓   │ KI   KI    BE   BE   BE
+   19  │    50  │      0  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │   ✓   │ KI   KI    BE   BE   BE
+   19  │    50  │      5  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │   ✓   │ KI   KI    BE   BE   BE
+   19  │    50  │     10  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │   ✓   │ KI   KI    BE   BE   BE
+   19  │    50  │     15  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │       │  BE  KI   KI    BE   BE
+   19  │    50  │     20  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │       │  BE  KI   KI    BE   BE
+   19  │    50  │     25  │    8,14 │    15%   │ AGRESSZÍV  │   ✓  │      │     │  ✓  │       │  BE  KI   KI    BE   BE
+   19  │    60  │     -5  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   19  │    60  │      0  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   19  │    60  │      5  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   19  │    60  │     10  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   19  │    60  │     15  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │       │  BE  KI   KI    BE   KI
+   19  │    60  │     20  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │       │  BE  KI   KI    BE   KI
+   19  │    60  │     25  │    9,77 │     2%   │ FINOM      │   ✓  │      │     │     │       │  BE  KI   KI    BE   KI
+   19  │    70  │     -5  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    70  │      0  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    70  │      5  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    70  │     10  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    70  │     15  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    70  │     20  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    70  │     25  │   11,40 │    19%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │     -5  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │      0  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │      5  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │     10  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │     15  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │     20  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   19  │    80  │     25  │   13,03 │    36%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+   22  │    50  │     -5  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   22  │    50  │      0  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   22  │    50  │      5  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   22  │    50  │     10  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   22  │    50  │     15  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │   ✓   │ KI   KI    BE   BE   KI
+   22  │    50  │     20  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │       │  BE  KI   KI    BE   KI
+   22  │    50  │     25  │    9,70 │     1%   │ FINOM      │   ✓  │      │     │     │       │  BE  KI   KI    BE   KI
+   22  │    60  │     -5  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    60  │      0  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    60  │      5  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    60  │     10  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    60  │     15  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    60  │     20  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    60  │     25  │   11,64 │    21%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │     -5  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │      0  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │      5  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │     10  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │     15  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │     20  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    70  │     25  │   13,58 │    41%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │     -5  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │      0  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │      5  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │     10  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │     15  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │     20  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+   22  │    80  │     25  │   15,52 │    62%   │ AGRESSZÍV  │   ✓  │  ✓   │     │     │       │  BE  KI   KI   KI   KI
+
+Jelmagyarázat:
+  AH hiba% = Százalékos eltérés a cél AH-tól (9,61 g/m³)
+  Mód = AGRESSZÍV amikor AH hiba > 8,3%, FINOM amikor AH hiba ≤ 8,3% (v2.5: szélesebb holtsáv)
+  hűtés    = Hőmérséklet cél + deltahi felett (>16,5°C, v2.4-ben >16,0°C volt)
+  párátlan = Abszolút páratartalom cél + holtsáv felett (>10,41 g/m³)
+  fűtés    = Hőmérséklet cél - deltalo alatt (<14,0°C)
+  párás    = Abszolút páratartalom cél - holtsáv alatt (<8,81 g/m³)
+  KülElő   = Külső levegő előnyös hűtésre (hőm. különbség >= 5°C, nem párátlanít)
+
+Relék:
+  HŰTÉS = Vízhűtő szelep (0°C párátlanításhoz, 8°C csak hűtéshez)
+  FŰTÉS = Fűtés relé
+  LEV   = Külső levegő csappantyú
+  BYP   = Bypass (BE csak hűtésnél, KI párátlanításnál)
+  PÁR   = Párásító relé (ha has_humidifier=true a kamrára)
+
+================================================================================
+                    PÁRATARTALOM-ELSŐDLEGES MÓD ELEMZÉS
+================================================================================
+
+Kulcs felismerés: A módot a PÁRATARTALOM (AH) határozza meg, nem a hőmérséklet!
+
+v2.5 AH küszöbök:
+  - Cél AH: 9,61 g/m³ (15°C-on, 75% RH-nál)
+  - Holtsáv: ±0,8 g/m³
+  - PÁRÁS küszöb: 10,41 g/m³ (cél + 0,8)
+  - SZÁRAZ küszöb: 8,81 g/m³ (cél - 0,8)
+  - PÁRÁS→FINOM kilépés: 9,31 g/m³ (cél - hiszterézis)
+  - SZÁRAZ→FINOM kilépés: 9,91 g/m³ (cél + hiszterézis)
+
+┌─────────┬─────────┬───────────┬──────────┬────────────┬─────────────────────────────────────────────┐
+│ Kamra   │ RH%     │ AH g/m³   │ vs Cél   │ Mód        │ Miért                                       │
+├─────────┼─────────┼───────────┼──────────┼────────────┼─────────────────────────────────────────────┤
+│    10°C │    50%  │    4,70   │   -51%   │ AGRESSZÍV  │ Messze a 8,81 küszöb alatt                  │
+│    10°C │    80%  │    7,51   │   -22%   │ AGRESSZÍV  │ Még mindig a 8,81 küszöb alatt              │
+│    13°C │    70%  │    7,93   │   -17%   │ AGRESSZÍV  │ A 8,81 küszöb alatt                         │
+│    13°C │    80%  │    9,07   │    -6%   │ FINOM      │ 8,81 felett, holtsávon belül                │
+│    16°C │    70%  │    9,53   │    -1%   │ FINOM      │ Holtsávon belül                             │
+│    16°C │    80%  │   10,89   │   +13%   │ AGRESSZÍV  │ A 10,41 küszöb felett                       │
+│    19°C │    50%  │    8,14   │   -15%   │ AGRESSZÍV  │ A 8,81 küszöb alatt                         │
+│    19°C │    60%  │    9,77   │    +2%   │ FINOM      │ Holtsávon belül                             │
+│    22°C │    50%  │    9,70   │    +1%   │ FINOM      │ Holtsávon belül (meleg de elfogadható AH!)  │
+│    22°C │    60%  │   11,64   │   +21%   │ AGRESSZÍV  │ A 10,41 küszöb felett                       │
+└─────────┴─────────┴───────────┴──────────┴────────────┴─────────────────────────────────────────────┘
+
+Kulcs megfigyelések (v2.5):
+  - 22°C/50% RH-nál: AH 9,70 g/m³, ±0,8 holtsávon belül → FINOM mód!
+  - 10°C/80% RH-nál: AH 7,51 g/m³, 8,81 alatt → AGRESSZÍV mód!
+  - 13°C/80% RH-nál: AH 9,07 g/m³, 8,81 felett → most FINOM mód (v2.4-ben AGRESSZÍV volt)
+  - A hőmérséklet önmagában nem határozza meg a módot - a PÁRATARTALOM igen!
+  - Szélesebb holtsáv (0,8 vs 0,5) kevesebb mód átmenetet jelent
+
+================================================================================
+                    RH KÜSZÖB PÁRÁSÍTÓHOZ HŐMÉRSÉKLET SZERINT (v2.5)
+================================================================================
+
+Minden hőmérsékleten milyen RH aktiválja a párásítót BE/KI?
+(AH összehasonlítás alapján: SZÁRAZ küszöb = 8,81 g/m³, kilépés = 9,91 g/m³)
+
+┌────────┬─────────────────┬─────────────────┬─────────────────────────────────┐
+│ Hőm.   │ SZÁRAZ alatta   │ Kilépés felette │ Megjegyzések                    │
+├────────┼─────────────────┼─────────────────┼─────────────────────────────────┤
+│   10°C │         < 93,7% │        >= 100%  │ Hideg: lehetetlen kilépni       │
+│   11°C │         < 88,1% │        >= 99,0% │ Hideg: nagyon magas RH kell     │
+│   12°C │         < 82,8% │        >= 93,1% │ Hideg: magas RH kell            │
+│   13°C │         < 77,8% │        >= 87,5% │ Hideg: magas RH kell            │
+│   14°C │         < 73,1% │        >= 82,3% │ Hideg: magasabb RH kell         │
+│   15°C │         < 68,8% │        >= 77,4% │ CÉLHŐMÉRSÉKLETEN                │
+│   16°C │         < 64,7% │        >= 72,7% │ Meleg: alacsonyabb RH küszöb    │
+│   17°C │         < 60,9% │        >= 68,4% │ Meleg: alacsonyabb RH küszöb    │
+│   18°C │         < 57,4% │        >= 64,5% │ Meleg: alacsonyabb RH küszöb    │
+│   19°C │         < 54,1% │        >= 60,8% │ Meleg: alacsonyabb RH küszöb    │
+│   20°C │         < 51,0% │        >= 57,4% │ Meleg: alacsonyabb RH küszöb    │
+│   21°C │         < 48,2% │        >= 54,2% │ Meleg: alacsonyabb RH küszöb    │
+│   22°C │         < 45,5% │        >= 51,2% │ Meleg: alacsonyabb RH küszöb    │
+└────────┴─────────────────┴─────────────────┴─────────────────────────────────┘
+
+================================================================================
+                    RH KÜSZÖB PÁRÁTLANÍTÁSHOZ HŐMÉRSÉKLET SZERINT (v2.5)
+================================================================================
+
+Minden hőmérsékleten milyen RH aktiválja a párátlanítást?
+(AH összehasonlítás alapján: PÁRÁS küszöb = 10,41 g/m³, kilépés = 9,31 g/m³)
+
+┌────────┬───────────────────┬───────────────────┬─────────────────────────────────────────────────┐
+│ Hőm.   │ PÁRÁS felette     │ Kilépés alatta    │ Megjegyzések                                    │
+├────────┼───────────────────┼───────────────────┼─────────────────────────────────────────────────┤
+│   10°C │            > 100% │          < 99,0%  │ Lehetetlen - hideg levegő nem tart ennyi nedv.  │
+│   11°C │            > 100% │          < 93,1%  │ Nagyon ritka hideg hőmérsékleten                │
+│   12°C │           > 97,8% │          < 87,5%  │ Nagyon magas RH kell hideg hőm.-en              │
+│   13°C │           > 91,9% │          < 82,2%  │ Nagyon magas RH kell hideg hőm.-en              │
+│   14°C │           > 86,5% │          < 77,4%  │ Magas RH aktiválja a párátlanítást              │
+│   15°C │           > 81,3% │          < 72,7%  │ Célhőmérsékleten                                │
+│   16°C │           > 76,5% │          < 68,4%  │ Alacsonyabb RH aktivál melegben                 │
+│   17°C │           > 72,0% │          < 64,3%  │ Alacsonyabb RH aktivál melegben                 │
+│   18°C │           > 67,9% │          < 60,6%  │ Alacsonyabb RH aktivál melegben                 │
+│   19°C │           > 64,0% │          < 57,2%  │ Alacsonyabb RH aktivál melegben                 │
+│   20°C │           > 60,4% │          < 53,9%  │ Alacsonyabb RH aktivál melegben                 │
+│   21°C │           > 57,0% │          < 50,9%  │ Alacsonyabb RH aktivál melegben                 │
+│   22°C │           > 53,8% │          < 48,1%  │ Alacsonyabb RH aktivál melegben                 │
+└────────┴───────────────────┴───────────────────┴─────────────────────────────────────────────────┘
+
+================================================================================
+                    v2.5 HISZTERÉZIS HATÁS A MÓD ÁTMENETEKRE
+================================================================================
+
+Példa: Kamra 16°C-on, páratartalom emelkedik és csökken
+
+HISZTERÉZIS NÉLKÜL (v2.4 - hajlamos oszcillációra):
+  RH emelkedik: 74% → 75% → 76% → 77%
+  AH emelkedik: 10,07 → 10,21 → 10,35 → 10,48
+  Mód:          FINOM → FINOM → FINOM → AGRESSZÍV
+                                       (átlépi 10,41-et)
+              
+  RH csökken:   77% → 76% → 75%
+  AH csökken:   10,48 → 10,35 → 10,21
+  Mód:          AGRESSZÍV → FINOM → FINOM
+                (azonnal vissza FINOM-ba!)
+
+  Probléma: A határon a mód gyorsan válthat kis változásokkal!
+
+HISZTERÉZISSEL (v2.5 - stabil):
+  RH emelkedik: 74% → 75% → 76% → 77%
+  AH emelkedik: 10,07 → 10,21 → 10,35 → 10,48
+  Mód:          FINOM → FINOM → FINOM → AGRESSZÍV
+                                       (átlépi 10,41-et)
+              
+  RH csökken:   77% → 76% → 75% → ... → 69%
+  AH csökken:   10,48 → 10,35 → 10,21 → ... → 9,40
+  Mód:          AGRESSZÍV → AGRESSZÍV → AGRESSZÍV → ... → AGRESSZÍV
+                (9,31-et kell elérnie a kilépéshez!)
+              
+  69%/9,40-nél: Még > 9,31 hiszterézis küszöb → MARAD AGRESSZÍV
+  68%/9,26-nál: 9,31 alatt → MOST vált FINOM-ra
+  
+  Eredmény: Nincs oszcilláció a határokon! A rendszer stabil.
+
+================================================================================
+                           ELLENŐRZÉSI LISTA (v2.5)
+================================================================================
+
+✓ KASZKÁD HIERARCHIA:
+  - Kamra (külső) SZÉLESEBB sávokkal rendelkezik mint Befúvó (belső)
+  - AH: 1,9 g/m³ > 1,2 g/m³ ✓
+  - Hőm: 3,0°C > 2,3°C ✓
+
+✓ PÁRATARTALOM-ELSŐDLEGES holtsáv működik:
+  - FINOM mód amikor AH ±0,8 g/m³-on belül van a céltól (8,81-10,41 g/m³)
+  - SZÁRAZ mód amikor AH < 8,81 g/m³
+  - PÁRÁS mód amikor AH > 10,41 g/m³
+  - A módot a PÁRATARTALOM határozza meg, nem a hőmérséklet
+
+✓ IRÁNYÍTOTT HISZTERÉZIS:
+  - PÁRÁS → FINOM megköveteli cél - 0,3 = 9,31 g/m³ átlépését
+  - SZÁRAZ → FINOM megköveteli cél + 0,3 = 9,91 g/m³ átlépését
+  - Megakadályozza az oszcillációt a határokon
+
+✓ MÓD PÉLDÁK (v2.5):
+  - 22°C/50% RH → AH 9,70 (±0,8-on belül) → FINOM mód
+  - 13°C/80% RH → AH 9,07 (±0,8-on belül) → FINOM mód (v2.4-ben AGRESSZÍV volt)
+  - 10°C/80% RH → AH 7,51 (8,81 alatt) → AGRESSZÍV mód
+  - 16°C/80% RH → AH 10,91 (10,41 felett) → AGRESSZÍV mód
+
+✓ KÜLSŐ LEVEGŐ csak hűtésre:
+  - Használva amikor kamra-külső ≥ 5°C ÉS NEM párátlanít
+  - NEM használható párátlanításkor (bypass ZÁRVA a kondenzációhoz)
+
+✓ VÍZ 0°C-on párátlanításhoz:
+  - Bypass ZÁRVA amikor párátlanítás aktív (hideg tekercs kondenzációhoz)
+
+✓ PÁRÁTLANÍTÁS + FŰTÉS kombináció:
+  - Mind HŰTÉS és FŰTÉS relék BE hideg párás körülményeknél
+  - Párátlanít (nedvességet eltávolít) + Utófűt (hőmérsékletet visszaállít)
+
+✓ PÁRÁSÍTÓ vezérlés:
+  - BE amikor AH < 8,81 g/m³ (SZÁRAZ küszöb)
+  - KI amikor AH > 9,91 g/m³ (kilépési küszöb hiszterézissel)
+  - Hiszterézis megakadályozza az oszcillációt
+
+✓ v2.5 Hőmérséklet küszöb:
+  - Hűtés most >16,5°C-nál aktiválódik (korábban >16,0°C volt)
+  - Több hőmérséklet toleranciát enged párátlanítás közben
+
+================================================================================
+                              JELENTÉS VÉGE
+================================================================================
