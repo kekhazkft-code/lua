@@ -1,0 +1,254 @@
+# ERLELO v2.5 Scenario Analysis
+
+## Scenario 0: System Reboot - Safe Initialization
+
+### Conditions
+- SINUM controller just rebooted
+- All variables reset to default values (0)
+- Chamber actual (unknown): 15°C, 75% RH
+- Sensors not yet read
+
+### Problem Without Initialization
+```
+Variables show: T=0, RH=0, AH=0
+Control logic sees:
+  - Temperature WAY below target
+  - Humidity WAY below target
+  - MODE_DRY activated
+
+Response WITHOUT init:
+  - Heating ON (emergency!)
+  - Humidifier ON (if installed)
+  - Potential equipment damage!
+```
+
+### System Response With Initialization
+| Time | init_complete | init_countdown | Relays | Activity |
+|------|---------------|----------------|--------|----------|
+| 0s | false | 32 | ALL OFF | Start reading sensors |
+| 5s | false | 27 | ALL OFF | Buffers filling |
+| 15s | false | 17 | ALL OFF | AH/DP calculated |
+| 25s | false | 7 | ALL OFF | Mode determined |
+| 32s | true | 0 | NORMAL | Control enabled |
+
+### Signals During Initialization
+```json
+{
+  "init_complete": false,
+  "init_countdown": 15,
+  "humidity_mode": 0,
+  "kamra_hutes": false,
+  "kamra_futes": true,
+  "relay_cool": false,
+  "relay_warm": false
+}
+```
+Note: kamra_futes=true (control logic runs) but relay_warm=false (relays disabled during init)
+
+---
+
+## Scenario 1: Hot Summer Day - Dehumidification Required
+
+### Conditions
+- Outdoor: 32°C, 60% RH (AH = 20.1 g/m³)
+- Chamber target: 15°C, 75% RH (AH = 9.6 g/m³)
+- Chamber actual: 17°C, 85% RH (AH = 12.3 g/m³)
+- Supply: 14°C, 90% RH
+
+### Analysis
+```
+AH Error = 12.3 - 9.6 = +2.7 g/m³
+Deadzone = 0.8 g/m³
+Entry threshold = 9.6 + 0.8 = 10.4 g/m³
+
+12.3 > 10.4 → MODE_HUMID activated
+
+Chamber temp: 17°C > 15 + 1.5 = 16.5°C → Cooling ON
+Supply temp: Using proportional gain for aggressive response
+```
+
+### System Response
+| Signal | State | Reason |
+|--------|-------|--------|
+| humidity_mode | HUMID | AH above threshold |
+| kamra_hutes | ON | Temp above upper band |
+| kamra_para_hutes | ON | MODE_HUMID active |
+| relay_cool | ON | Water cooling for dehumidification |
+| relay_add_air_max | OFF | Outdoor air too humid |
+| relay_warm | OFF | No heating needed |
+
+### Exit Condition
+```
+Exit threshold = 9.6 - 0.3 = 9.3 g/m³
+MODE_HUMID → MODE_FINE when AH < 9.3 g/m³
+```
+
+---
+
+## Scenario 2: Cool Night - Outdoor Air Beneficial
+
+### Conditions
+- Outdoor: 8°C, 85% RH (AH = 7.2 g/m³)
+- Chamber target: 15°C, 75% RH (AH = 9.6 g/m³)
+- Chamber actual: 16°C, 78% RH (AH = 10.7 g/m³)
+- Supply: 15°C, 80% RH
+
+### Analysis
+```
+AH Error = 10.7 - 9.6 = +1.1 g/m³
+Deadzone = 0.8 g/m³
+
+10.7 > 10.4 (9.6 + 0.8) → MODE_HUMID
+
+BUT: Outdoor AH (7.2) < Target AH (9.6)
+     Outdoor advantage = 16 - 8 = 8°C > 5°C threshold
+
+Outdoor air is beneficial for both cooling AND dehumidification!
+```
+
+### System Response
+| Signal | State | Reason |
+|--------|-------|--------|
+| humidity_mode | HUMID | AH above threshold |
+| kamra_hutes | ON | Slight cooling needed |
+| use_outdoor_air | ON | Outdoor cooler AND drier |
+| relay_cool | OFF | Using outdoor air instead |
+| relay_add_air_max | ON | Fresh air ventilation |
+| relay_bypass_open | OFF | Not needed in dehumid mode |
+
+### Energy Efficiency
+Using outdoor air instead of water cooling saves energy.
+
+---
+
+## Scenario 3: Winter - Humidity Too Low (No Humidifier)
+
+### Conditions
+- Outdoor: -5°C, 90% RH (AH = 3.2 g/m³)
+- Chamber target: 14°C, 80% RH (AH = 9.6 g/m³)
+- Chamber actual: 12°C, 65% RH (AH = 7.1 g/m³)
+- humidifier_installed = false
+
+### Analysis
+```
+AH Error = 7.1 - 9.6 = -2.5 g/m³
+Deadzone = 0.8 g/m³
+Entry threshold = 9.6 - 0.8 = 8.8 g/m³
+
+7.1 < 8.8 → MODE_DRY activated
+
+Chamber temp: 12°C < 14 - 1.0 = 13°C → Heating requested
+BUT: 12°C > min_temp_no_humidifier (11°C)
+     AND humidity_mode = DRY
+     AND humidifier_installed = false
+```
+
+### "Better Cold Than Dry" Logic
+```
+Heating is BLOCKED because:
+1. No humidifier available
+2. Chamber is too dry
+3. Temperature is above critical minimum (11°C)
+
+Heating would further dry the chamber → product damage
+```
+
+### System Response
+| Signal | State | Reason |
+|--------|-------|--------|
+| humidity_mode | DRY | AH below threshold |
+| kamra_futes | REQUEST | Temperature below target |
+| heating_blocked | TRUE | "Better cold than dry" |
+| relay_warm | OFF | Blocked due to dry conditions |
+| relay_add_air_max | OFF | Outdoor air too dry |
+| relay_humidifier | OFF | Not installed |
+
+---
+
+## Scenario 4: Winter - Humidity Too Low (With Humidifier)
+
+### Conditions
+Same as Scenario 3, but:
+- humidifier_installed = true
+
+### System Response
+| Signal | State | Reason |
+|--------|-------|--------|
+| humidity_mode | DRY | AH below threshold |
+| kamra_futes | ON | Temperature below target |
+| heating_blocked | FALSE | Humidifier available |
+| relay_warm | ON | Heating allowed |
+| relay_humidifier | ON | Adding moisture |
+
+---
+
+## Scenario 5: Stable Operation (MODE_FINE)
+
+### Conditions
+- Outdoor: 18°C, 70% RH (AH = 10.8 g/m³)
+- Chamber target: 15°C, 75% RH (AH = 9.6 g/m³)
+- Chamber actual: 15.2°C, 74% RH (AH = 9.4 g/m³)
+- Supply: 15°C, 75% RH
+
+### Analysis
+```
+AH Error = 9.4 - 9.6 = -0.2 g/m³
+|Error| = 0.2 < 0.8 (deadzone)
+
+→ MODE_FINE
+
+Chamber temp error = 15.2 - 15.0 = +0.2°C
+Within deadband (14.5 - 15.5°C)
+```
+
+### System Response
+| Signal | State | Reason |
+|--------|-------|--------|
+| humidity_mode | FINE | AH within deadzone |
+| kamra_hutes | OFF | Temp within deadband |
+| kamra_futes | OFF | Temp within deadband |
+| relay_cool | OFF | No cooling needed |
+| relay_warm | OFF | No heating needed |
+
+---
+
+## Scenario 6: Mode Transition with Directional Hysteresis
+
+### Why This Works
+```
+Without directional hysteresis:
+- AH = 9.7 would trigger MODE_HUMID
+- AH = 9.5 would exit to MODE_FINE
+- Rapid oscillation!
+
+With directional hysteresis:
+- Entry: AH > 10.4 (must rise significantly)
+- Exit: AH < 9.3 (must fall significantly)
+- Gap prevents oscillation
+```
+
+---
+
+## Summary: Mode Decision Matrix
+
+| Chamber AH | Humidity Mode | Heating | Cooling | Notes |
+|------------|---------------|---------|---------|-------|
+| > target + 0.8 | HUMID | Blocked | Active | Dehumidify priority |
+| target ± 0.8 | FINE | Normal | Normal | Fine control |
+| < target - 0.8 | DRY | Blocked* | Off | *Unless < 11°C or humidifier |
+
+| Chamber Temp | Cooling | Heating | Notes |
+|--------------|---------|---------|-------|
+| > target + 1.5 | Active | Off | Upper threshold exceeded |
+| target - 0.5 to target + 0.5 | Off | Off | Deadband |
+| < target - 1.0 | Off | Active | Lower threshold exceeded |
+
+---
+
+## Initialization Summary
+
+| Phase | Duration | Relays | Control Logic |
+|-------|----------|--------|---------------|
+| INIT | 32s | ALL OFF | Runs normally |
+| NORMAL | Ongoing | Controlled | Runs normally |
+| SLEEP | Per cycle | ALL OFF | Runs normally |

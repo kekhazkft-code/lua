@@ -1,8 +1,19 @@
 --[[
-  ERLELO CHAMBER CONTROLLER v2.4
+  ERLELO CHAMBER CONTROLLER v2.5
   erlelo_kamra.lua
   
-  Humidity-Primary Control System
+  Humidity-Primary Control System with Dual-Layer Cascade
+  
+  ALL CONTROL PARAMETERS READ FROM constansok VARIABLE
+  Use erlelo_constants_editor.lua to modify at runtime
+  
+  v2.5 CHANGES:
+  - Dual-layer cascade: Chamber (outer, wider) + Supply (inner, tighter)
+  - Directional hysteresis prevents mode oscillation at boundaries
+  - State machine for humidity mode (HUMID/FINE/DRY)
+  - All parameters configurable via constansok variable
+  - Buffer size reduced to 5 for faster response
+  - SAFE INITIALIZATION: 32s startup period with all relays OFF
   
   SETUP: Edit the configuration section below, then deploy to Sinum
   
@@ -48,6 +59,90 @@ local SBUS_CONFIG = {
 -- ============================================================================
 
 -- ============================================================================
+-- HUMIDITY MODE CONSTANTS
+-- ============================================================================
+
+local MODE_FINE = 0   -- AH within deadzone, fine control
+local MODE_HUMID = 1  -- AH too high, dehumidification needed
+local MODE_DRY = 2    -- AH too low, humidification needed
+
+-- ============================================================================
+-- INITIALIZATION TRACKING
+-- ============================================================================
+
+local init_start_time = nil   -- Timestamp when script started
+local init_complete = false   -- Flag: initialization period finished
+
+-- ============================================================================
+-- TIMING CONSTANTS (not user-configurable)
+-- ============================================================================
+
+local POLL_INTERVAL = 1000      -- Poll sensors every 1000ms (1 second)
+local STATS_INTERVAL = 30       -- Record stats every 30 poll cycles (~30 seconds)
+
+-- ============================================================================
+-- CACHED CONSTANTS (loaded from constansok variable)
+-- ============================================================================
+
+local cached_const = nil  -- Loaded from constansok variable
+
+-- Default values (used if constansok not yet loaded)
+local DEFAULT_CONST = {
+  -- Chamber temperature (outer loop)
+  deltahi_kamra_homerseklet = 15,      -- +1.5°C
+  deltalo_kamra_homerseklet = 10,      -- -1.0°C
+  temp_hysteresis_kamra = 5,           -- 0.5°C
+  
+  -- Chamber humidity (outer loop)
+  ah_deadzone_kamra = 80,              -- 0.8 g/m³
+  ah_hysteresis_kamra = 30,            -- 0.3 g/m³
+  
+  -- Supply temperature (inner loop)
+  deltahi_befujt_homerseklet = 10,     -- 1.0°C
+  deltalo_befujt_homerseklet = 10,     -- 1.0°C
+  temp_hysteresis_befujt = 3,          -- 0.3°C
+  
+  -- Supply humidity (inner loop)
+  ah_deadzone_befujt = 50,             -- 0.5 g/m³
+  ah_hysteresis_befujt = 20,           -- 0.2 g/m³
+  
+  -- Global control
+  outdoor_mix_ratio = 30,              -- 30%
+  outdoor_use_threshold = 50,          -- 5.0°C
+  proportional_gain = 10,              -- 1.0
+  min_supply_air_temp = 60,            -- 6.0°C
+  max_supply_air_temp = 400,           -- 40.0°C
+  min_temp_no_humidifier = 110,        -- 11.0°C
+  
+  -- Sensor processing
+  buffer_size = 5,                     -- samples
+  spike_threshold = 50,                -- ±5.0
+  max_error_count = 10,                -- errors before failsafe
+  temp_change_threshold = 2,           -- 0.2°C for propagation
+  humidity_change_threshold = 5,       -- 0.5% for propagation
+  
+  -- Humidifier
+  humidifier_installed = false,
+  humidifier_start_delta = 50,         -- 5.0% RH
+  
+  -- Sleep cycle
+  sleep_cycle_enabled = false,
+  sleep_on_minutes = 45,
+  sleep_off_minutes = 15,
+  
+  -- Initialization
+  init_duration = 32,                   -- 32 seconds initialization period
+}
+
+-- Get constant value (from cached_const or default)
+local function C(key)
+  if cached_const and cached_const[key] ~= nil then
+    return cached_const[key]
+  end
+  return DEFAULT_CONST[key]
+end
+
+-- ============================================================================
 -- VARIABLE MAPPING SYSTEM
 -- ============================================================================
 
@@ -79,17 +174,12 @@ local function loadVarMap()
   return VAR_MAP
 end
 
--- Get variable by name (with appropriate suffix)
--- Chamber-specific variables: name_ch1, name_ch2, name_ch3
--- Global variables: name_glbl (outdoor, mapping)
+-- Get variable by name
 local function V(name)
   local map = loadVarMap()
-  if not map then
-    print("ERROR: Cannot load variable map")
-    return nil
-  end
+  if not map then return nil end
   
-  -- First try chamber-specific suffix
+  -- Try chamber-specific suffix first
   local var_name = name .. "_ch" .. CHAMBER_ID
   local idx = map[var_name]
   
@@ -100,14 +190,13 @@ local function V(name)
   end
   
   if not idx then
-    print("WARNING: Variable '" .. name .. "' not found (tried _ch" .. CHAMBER_ID .. " and _glbl)")
     return nil
   end
   
   return variable[idx]
 end
 
--- Get table value from a variable (handles JSON string parsing)
+-- Get table value from a variable
 local function getTableValue(var)
   if not var then return {} end
   local val = var:getValue()
@@ -120,6 +209,19 @@ local function getTableValue(var)
   return {}
 end
 
+-- Load constants from constansok variable
+local function loadConstants()
+  local constansok_var = V('constansok')
+  if constansok_var then
+    cached_const = getTableValue(constansok_var)
+    if cached_const and next(cached_const) then
+      return true
+    end
+  end
+  cached_const = nil
+  return false
+end
+
 -- ============================================================================
 -- LOCAL STATE
 -- ============================================================================
@@ -128,24 +230,33 @@ local HW = {}             -- Hardware (SBUS) shortcuts
 local mb_supply = nil     -- Modbus client for supply air
 local mb_chamber = nil    -- Modbus client for chamber
 local poll_timer = nil
-local inside_supply_deadzone = false  -- Deadzone state for hysteresis adjustment
 
--- ============================================================================
--- TIMING CONFIGURATION
--- ============================================================================
+-- State machine variables
+local humidity_mode_state = MODE_FINE
+local temp_cooling_active = false
+local temp_heating_active = false
+local supply_cooling_active = false
+local supply_heating_active = false
 
-local POLL_INTERVAL = 1000      -- Poll sensors every 1000ms (1 second)
-local STATS_INTERVAL = 30       -- Record stats every 30 poll cycles (~30 seconds)
-local SUPPLY_WARMUP_TIME = 120  -- Wait 120 seconds after active starts before collecting supply data
-local stats_counter = 0         -- Counter for statistics timing
-local active_start_time = nil   -- Timestamp when active phase started (for warmup delay)
-local last_active_state = nil   -- Track active state changes
+-- Statistics
+local stats_counter = 0
+
+-- Moving average buffers (in-memory)
+local supply_temp_buffer = {}
+local supply_humi_buffer = {}
+local chamber_temp_buffer = {}
+local chamber_humi_buffer = {}
+local buffer_indices = {
+  supply_temp = 1,
+  supply_humi = 1,
+  chamber_temp = 1,
+  chamber_humi = 1
+}
 
 -- ============================================================================
 -- UTILITY FUNCTIONS
 -- ============================================================================
 
--- Proper rounding function (rounds to nearest integer)
 local function round(value)
   if value >= 0 then
     return math.floor(value + 0.5)
@@ -158,453 +269,186 @@ end
 -- PSYCHROMETRIC CALCULATIONS
 -- ============================================================================
 
-local PSYCHRO = {
-  A = 6.112,
-  B = 17.67,
-  C = 243.5,
-  MW_RATIO = 2.1674,
-}
-
-local function saturation_vapor_pressure(temp_c)
-  return PSYCHRO.A * math.exp(PSYCHRO.B * temp_c / (PSYCHRO.C + temp_c))
+local function calculate_saturation_pressure(temp_c)
+  if temp_c >= 0 then
+    return 6.112 * math.exp((17.67 * temp_c) / (temp_c + 243.5))
+  else
+    return 6.112 * math.exp((22.46 * temp_c) / (temp_c + 272.62))
+  end
 end
 
-local function calculate_absolute_humidity(temp_c, rh)
-  local e_s = saturation_vapor_pressure(temp_c)
-  return PSYCHRO.MW_RATIO * (rh / 100) * e_s / (273.15 + temp_c)
+local function calculate_absolute_humidity(temp_c, rh_percent)
+  local e_s = calculate_saturation_pressure(temp_c)
+  local e = (rh_percent / 100) * e_s
+  local ah = (216.7 * e) / (temp_c + 273.15)
+  return ah
+end
+
+local function calculate_dew_point(temp_c, rh_percent)
+  local e_s = calculate_saturation_pressure(temp_c)
+  local e = (rh_percent / 100) * e_s
+  local dp = (243.5 * math.log(e / 6.112)) / (17.67 - math.log(e / 6.112))
+  return dp
 end
 
 local function calculate_rh_from_ah(temp_c, ah)
-  local e_s = saturation_vapor_pressure(temp_c)
-  return (ah * (273.15 + temp_c) / (PSYCHRO.MW_RATIO * e_s)) * 100
-end
-
-local function calculate_dew_point(temp_c, rh)
-  if rh <= 0 then return -999 end
-  local gamma = math.log(rh / 100) + PSYCHRO.B * temp_c / (PSYCHRO.C + temp_c)
-  return PSYCHRO.C * gamma / (PSYCHRO.B - gamma)
+  local e_s = calculate_saturation_pressure(temp_c)
+  local e = (ah * (temp_c + 273.15)) / 216.7
+  local rh = (e / e_s) * 100
+  if rh > 100 then rh = 100 end
+  if rh < 0 then rh = 0 end
+  return rh
 end
 
 -- ============================================================================
--- UTILITY FUNCTIONS
+-- MOVING AVERAGE WITH SPIKE FILTER
 -- ============================================================================
 
-local function moving_average_update(buffer_var, result_var, new_value, buffer_size, threshold)
-  if not buffer_var or not result_var then return false, nil end
+local function moving_average_update(buffer, index_key, new_value, result_var)
+  local buffer_size = C('buffer_size')
+  local spike_threshold = C('spike_threshold')
   
-  local buffer = buffer_var:getValue() or {}
-  
-  table.insert(buffer, new_value)
-  if #buffer > buffer_size then
-    table.remove(buffer, 1)
-  end
-  
-  buffer_var:setValue(buffer, true)  -- No propagation
-  
+  -- Initialize buffer if needed
   if #buffer < buffer_size then
-    return false, nil
+    table.insert(buffer, new_value)
+    buffer_indices[index_key] = #buffer
+  else
+    -- Trim buffer if buffer_size was reduced
+    while #buffer > buffer_size do
+      table.remove(buffer, 1)
+    end
+    
+    -- Calculate current average for spike detection
+    local sum = 0
+    for _, v in ipairs(buffer) do
+      sum = sum + v
+    end
+    local current_avg = sum / #buffer
+    
+    -- Spike filter: reject if too far from average
+    if math.abs(new_value - current_avg) > spike_threshold then
+      return current_avg
+    end
+    
+    -- Update circular buffer
+    local idx = buffer_indices[index_key]
+    if idx > #buffer then idx = 1 end
+    buffer[idx] = new_value
+    buffer_indices[index_key] = (idx % buffer_size) + 1
   end
   
+  -- Calculate new average
   local sum = 0
-  for _, v in ipairs(buffer) do sum = sum + v end
-  local avg = round(sum / #buffer)
+  for _, v in ipairs(buffer) do
+    sum = sum + v
+  end
+  local avg = sum / #buffer
   
-  local old_avg = result_var:getValue() or 0
-  if math.abs(avg - old_avg) >= threshold then
-    result_var:setValue(avg, false)  -- PROPAGATE
-    return true, avg
-  else
-    result_var:setValue(avg, true)   -- No propagation
-    return false, avg
+  -- Update result variable if provided
+  if result_var then
+    result_var:setValue(round(avg), true)
   end
+  
+  return avg
 end
 
-local function set_relay(should_be_on, relay_sbus)
-  if not relay_sbus then return false end
-  local current = relay_sbus:getValue("state")
-  if should_be_on and current ~= "on" then
-    relay_sbus:call("turn_on")
-    return true
-  elseif not should_be_on and current ~= "off" then
-    relay_sbus:call("turn_off")
-    return true
-  end
-  return false
-end
+-- ============================================================================
+-- HYSTERESIS FUNCTIONS
+-- ============================================================================
 
-local function hysteresis(measured, target, delta_hi, delta_lo, current_state)
-  if measured > target + delta_hi then
-    return true
-  elseif measured < target - delta_lo then
-    return false
-  else
-    return current_state
+-- Humidity Mode State Machine
+local function update_humidity_mode(current_ah, target_ah, deadzone, hysteresis, current_mode)
+  local upper_threshold = target_ah + deadzone
+  local lower_threshold = target_ah - deadzone
+  local exit_humid = target_ah - hysteresis
+  local exit_dry = target_ah + hysteresis
+  
+  if current_mode == MODE_HUMID then
+    if current_ah < exit_humid then
+      return MODE_FINE
+    else
+      return MODE_HUMID
+    end
+    
+  elseif current_mode == MODE_DRY then
+    if current_ah > exit_dry then
+      return MODE_FINE
+    else
+      return MODE_DRY
+    end
+    
+  else  -- MODE_FINE
+    if current_ah > upper_threshold then
+      return MODE_HUMID
+    elseif current_ah < lower_threshold then
+      return MODE_DRY
+    else
+      return MODE_FINE
+    end
   end
 end
 
 -- ============================================================================
--- STATISTICS RECORDING
+-- MODBUS CONFIGURATION
 -- ============================================================================
 
-local function record_statistics()
-  -- Check aktív/pihenő state from cycle variable
-  local cycle_var = V('cycle_variable')
-  local is_aktiv = true  -- Default to aktív if no cycle data
-  if cycle_var then
-    local cycle = getTableValue(cycle_var)
-    is_aktiv = cycle.aktiv ~= false  -- aktiv unless explicitly false
-  end
-  
-  -- Track active phase transitions for warmup timing
-  local current_time = os.time()
-  if last_active_state ~= is_aktiv then
-    if is_aktiv then
-      -- Just switched to active - start warmup timer
-      active_start_time = current_time
-      print("Active phase started - waiting " .. SUPPLY_WARMUP_TIME .. "s before collecting supply data")
-    else
-      -- Switched to rest - clear warmup timer
-      active_start_time = nil
-    end
-    last_active_state = is_aktiv
-  end
-  
-  -- Check if warmup period has elapsed (2 minutes after active starts)
-  local supply_data_ready = is_aktiv and active_start_time and 
-                            (current_time - active_start_time) >= SUPPLY_WARMUP_TIME
-  
-  -- Record aktív/pihenő state (1=aktív, 0=pihenő)
-  statistics:addPoint("mode_ch" .. CHAMBER_ID, is_aktiv and 1 or 0, unit.bool_unit)
-  
-  -- Chamber temperature and humidity (always record)
-  local kamra_hom = V('kamra_homerseklet')
-  local kamra_para = V('kamra_para')
-  
-  if kamra_hom then
-    local temp = kamra_hom:getValue()
-    if temp then
-      statistics:addPoint("chamber_temp_ch" .. CHAMBER_ID, temp, unit.celsius_x10)
-    end
-  end
-  
-  if kamra_para then
-    local humi = kamra_para:getValue()
-    if humi then
-      statistics:addPoint("chamber_humidity_ch" .. CHAMBER_ID, humi, unit.relative_humidity_x10)
-    end
-  end
-  
-  -- Supply air temperature and humidity (ONLY after 2-min warmup in aktív phase)
-  if supply_data_ready then
-    local befujt_hom = V('befujt_homerseklet_akt')
-    local befujt_para = V('befujt_para_akt')
-    
-    if befujt_hom then
-      local temp = befujt_hom:getValue()
-      if temp then
-        statistics:addPoint("supply_temp_ch" .. CHAMBER_ID, temp, unit.celsius_x10)
-      end
-    end
-    
-    if befujt_para then
-      local humi = befujt_para:getValue()
-      if humi then
-        statistics:addPoint("supply_humidity_ch" .. CHAMBER_ID, humi, unit.relative_humidity_x10)
-      end
-    end
-    
-    -- NTC water temperatures (ONLY after 2-min warmup in aktív phase)
-    local ntc1 = V('ntc1_homerseklet')
-    local ntc2 = V('ntc2_homerseklet')
-    local ntc3 = V('ntc3_homerseklet')
-    local ntc4 = V('ntc4_homerseklet')
-    
-    if ntc1 then
-      local temp = ntc1:getValue()
-      if temp then statistics:addPoint("ntc1_ch" .. CHAMBER_ID, temp, unit.celsius_x10) end
-    end
-    if ntc2 then
-      local temp = ntc2:getValue()
-      if temp then statistics:addPoint("ntc2_ch" .. CHAMBER_ID, temp, unit.celsius_x10) end
-    end
-    if ntc3 then
-      local temp = ntc3:getValue()
-      if temp then statistics:addPoint("ntc3_ch" .. CHAMBER_ID, temp, unit.celsius_x10) end
-    end
-    if ntc4 then
-      local temp = ntc4:getValue()
-      if temp then statistics:addPoint("ntc4_ch" .. CHAMBER_ID, temp, unit.celsius_x10) end
-    end
-  end
-  
-  -- Target values (always record)
-  local cel_hom = V('kamra_cel_homerseklet')
-  local cel_para = V('kamra_cel_para')
-  
-  if cel_hom then
-    local temp = cel_hom:getValue()
-    if temp then
-      statistics:addPoint("target_temp_ch" .. CHAMBER_ID, temp, unit.celsius_x10)
-    end
-  end
-  
-  if cel_para then
-    local humi = cel_para:getValue()
-    if humi then
-      statistics:addPoint("target_humidity_ch" .. CHAMBER_ID, humi, unit.relative_humidity_x10)
-    end
-  end
-  
-  -- Dew point values
-  local dp_kamra = V('dp_kamra')
-  local dp_befujt = V('dp_befujt')
-  local dp_cel = V('dp_cel')
-  
-  if dp_kamra then
-    local dp = dp_kamra:getValue()
-    if dp then
-      statistics:addPoint("chamber_dewpoint_ch" .. CHAMBER_ID, dp, unit.celsius_x10)
-    end
-  end
-  
-  -- Supply dew point (ONLY after 2-min warmup)
-  if supply_data_ready and dp_befujt then
-    local dp = dp_befujt:getValue()
-    if dp then
-      statistics:addPoint("supply_dewpoint_ch" .. CHAMBER_ID, dp, unit.celsius_x10)
-    end
-  end
-  
-  if dp_cel then
-    local dp = dp_cel:getValue()
-    if dp then
-      statistics:addPoint("target_dewpoint_ch" .. CHAMBER_ID, dp, unit.celsius_x10)
-    end
-  end
-end
-
-local function log_control_action(old_signals, new_signals)
-  -- Log meaningful control state changes
-  local prefix = "ch" .. CHAMBER_ID .. "_"
-  
-  -- Heating state
-  if old_signals.kamra_futes ~= new_signals.kamra_futes then
-    statistics:addPoint(prefix .. "heating", new_signals.kamra_futes and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " heating " .. (new_signals.kamra_futes and "ON" or "OFF"))
-  end
-  
-  -- Cooling state
-  if old_signals.kamra_hutes ~= new_signals.kamra_hutes then
-    statistics:addPoint(prefix .. "cooling", new_signals.kamra_hutes and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " cooling " .. (new_signals.kamra_hutes and "ON" or "OFF"))
-  end
-  
-  -- Dehumidification state
-  if old_signals.kamra_para_hutes ~= new_signals.kamra_para_hutes then
-    statistics:addPoint(prefix .. "dehumidify", new_signals.kamra_para_hutes and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " dehumidify " .. (new_signals.kamra_para_hutes and "ON" or "OFF"))
-  end
-  
-  -- Supply heating
-  if old_signals.befujt_futes ~= new_signals.befujt_futes then
-    statistics:addPoint(prefix .. "supply_heat", new_signals.befujt_futes and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " supply heating " .. (new_signals.befujt_futes and "ON" or "OFF"))
-  end
-  
-  -- Supply cooling
-  if old_signals.befujt_hutes ~= new_signals.befujt_hutes then
-    statistics:addPoint(prefix .. "supply_cool", new_signals.befujt_hutes and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " supply cooling " .. (new_signals.befujt_hutes and "ON" or "OFF"))
-  end
-  
-  -- Humidification
-  if old_signals.relay_humidifier ~= new_signals.relay_humidifier then
-    statistics:addPoint(prefix .. "humidifier", new_signals.relay_humidifier and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " humidifier " .. (new_signals.relay_humidifier and "ON" or "OFF"))
-  end
-  
-  -- Sleep mode
-  if old_signals.sleep ~= new_signals.sleep then
-    statistics:addPoint(prefix .. "sleep", new_signals.sleep and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " sleep mode " .. (new_signals.sleep and "ON" or "OFF"))
-  end
-  
-  -- Bypass
-  if old_signals.relay_bypass_open ~= new_signals.relay_bypass_open then
-    statistics:addPoint(prefix .. "bypass", new_signals.relay_bypass_open and 1 or 0, unit.bool_unit)
-    print("STATS: Chamber " .. CHAMBER_ID .. " bypass " .. (new_signals.relay_bypass_open and "OPEN" or "CLOSED"))
-  end
-end
-
--- ============================================================================
--- UI REFRESH
--- ============================================================================
-
-local function refresh_ui(device)
-  -- Helper to safely update UI element
-  local function updateElement(name, value)
-    local elem = device:getElement(name)
-    if elem then
-      elem:setValue('value', value, true)
-    end
-  end
-  
-  -- Get current values
-  local kamra_hom = V('kamra_homerseklet')
-  local kamra_para = V('kamra_para')
-  local befujt_hom = V('befujt_homerseklet_akt')
-  local befujt_para = V('befujt_para_akt')
-  local kulso_hom = V('kulso_homerseklet')
-  local kulso_para = V('kulso_para')
-  local dp_kamra = V('dp_kamra')
-  local dp_befujt = V('dp_befujt')
-  local dp_cel = V('dp_cel')
-  local ah_kamra = V('ah_kamra')
-  local ah_befujt = V('ah_befujt')
-  local kulso_ah_dp = V('kulso_ah_dp')
-  local signals_var = V('signals')
-  
-  -- Chamber temperature and humidity
-  if kamra_hom then
-    local temp = kamra_hom:getValue() or 0
-    updateElement('_3_tx_kamra_homerseklet_', string.format("%.1f°C", temp / 10))
-  end
-  
-  if kamra_para then
-    local humi = kamra_para:getValue() or 0
-    updateElement('_4_tx_kamra_para_', string.format("%.1f%%", humi / 10))
-  end
-  
-  -- Supply air temperature and humidity
-  if befujt_hom then
-    local temp = befujt_hom:getValue() or 0
-    updateElement('_1_tx_befujt_homerseklet_', string.format("%.1f°C", temp / 10))
-  end
-  
-  if befujt_para then
-    local humi = befujt_para:getValue() or 0
-    updateElement('_2_tx_befujt_para_', string.format("%.1f%%", humi / 10))
-  end
-  
-  -- Outdoor temperature and humidity
-  if kulso_hom then
-    local temp = kulso_hom:getValue() or 0
-    updateElement('_3_tx_kulso_homerseklet_', string.format("%.1f°C", temp / 10))
-  end
-  
-  if kulso_para then
-    local humi = kulso_para:getValue() or 0
-    updateElement('_4_tx_kulso_para_', string.format("%.1f%%", humi / 10))
-  end
-  
-  -- Dew points
-  if dp_kamra then
-    local dp = dp_kamra:getValue() or 0
-    updateElement('dp_kamra_tx', string.format("HP: %.1f°C", dp / 10))
-  end
-  
-  if dp_befujt then
-    local dp = dp_befujt:getValue() or 0
-    updateElement('dp_befujt_tx', string.format("HP: %.1f°C", dp / 10))
-  end
-  
-  if dp_cel then
-    local dp = dp_cel:getValue() or 0
-    updateElement('dp_cel_tx', string.format("Cél HP: %.1f°C", dp / 10))
-  end
-  
-  -- Outdoor dew point
-  if kulso_ah_dp then
-    local data = getTableValue(kulso_ah_dp)
-    if data.dp then
-      updateElement('dp_kulso_tx', string.format("HP: %.1f°C", data.dp))
-    end
-  end
-  
-  -- Absolute humidity values
-  if ah_kamra then
-    local ah = ah_kamra:getValue() or 0
-    updateElement('ah_kamra_tx', string.format("AH: %.3fg/m³", ah / 1000))
-  end
-  
-  if ah_befujt then
-    local ah = ah_befujt:getValue() or 0
-    updateElement('ah_befujt_tx', string.format("AH: %.3fg/m³", ah / 1000))
-  end
-  
-  if kulso_ah_dp then
-    local data = getTableValue(kulso_ah_dp)
-    if data.ah then
-      updateElement('ah_kulso_tx', string.format("AH: %.3fg/m³", data.ah))
-    end
-  end
-  
-  -- Control status indicators
-  if signals_var then
-    local signals = getTableValue(signals_var)
-    
-    -- Heating/Cooling status
-    if signals.kamra_futes then
-      updateElement('text_input_0_warm', "Fűtés Aktív!")
-    else
-      updateElement('text_input_0_warm', " ")
-    end
-    
-    if signals.kamra_hutes then
-      updateElement('text_input_1_cool', "Hűtés Aktív!")
-    else
-      updateElement('text_input_1_cool', " ")
-    end
-    
-    -- Dehumidification status
-    if signals.kamra_para_hutes then
-      updateElement('text_input_2_wdis', "Párátlanítás!")
-    else
-      updateElement('text_input_2_wdis', " ")
-    end
-    
-    -- Humidification status
-    if signals.relay_humidifier then
-      updateElement('text_input_3_cdis', "Párásítás!")
-    else
-      updateElement('text_input_3_cdis', " ")
-    end
-  end
-end
+local config = {
+  modbus = {
+    chamber_1 = { slave_id = 1, reg_temperature = 0 },
+    chamber_2 = { slave_id = 2, reg_temperature = 0 },
+    chamber_3 = { slave_id = 3, reg_temperature = 0 },
+  }
+}
 
 -- ============================================================================
 -- SENSOR DATA PROCESSING
 -- ============================================================================
 
-local function update_supply_psychrometric()
-  local temp_var = V('befujt_homerseklet_akt')
-  local humi_var = V('befujt_para_akt')
+local function process_supply_data(temp_raw, humi_raw)
+  local temp_raw_var = V('befujt_homerseklet_raw')
+  local humi_raw_var = V('befujt_para_raw')
+  if temp_raw_var then temp_raw_var:setValue(temp_raw, true) end
+  if humi_raw_var then humi_raw_var:setValue(humi_raw, true) end
   
-  if not temp_var or not humi_var then return end
+  local temp_avg_var = V('befujt_homerseklet_akt')
+  local humi_avg_var = V('befujt_para_akt')
   
-  local temp = temp_var:getValue() or 0
-  local humi = humi_var:getValue() or 0
+  moving_average_update(supply_temp_buffer, 'supply_temp', temp_raw, temp_avg_var)
+  moving_average_update(supply_humi_buffer, 'supply_humi', humi_raw, humi_avg_var)
   
-  if temp == 0 or humi == 0 then return end
-  
-  local temp_c = temp / 10
-  local rh = humi / 10
-  
-  local ah = calculate_absolute_humidity(temp_c, rh)
-  local dp = calculate_dew_point(temp_c, rh)
-  
-  local ah_dp_var = V('ah_dp_table')
-  if not ah_dp_var then return end
-  
-  local data = getTableValue(ah_dp_var)
-  data.befujt_ah = math.floor(ah * 100) / 100
-  data.befujt_dp = math.floor(dp * 10) / 10
-  ah_dp_var:setValue(data, true)
+  local befujt_hibaszam = V('befujt_hibaszam')
+  if befujt_hibaszam then
+    befujt_hibaszam:setValue(C('max_error_count'), true)
+  end
 end
+
+local function process_chamber_data(temp_raw, humi_raw)
+  local temp_raw_var = V('kamra_homerseklet_raw')
+  local humi_raw_var = V('kamra_para_raw')
+  if temp_raw_var then temp_raw_var:setValue(temp_raw, true) end
+  if humi_raw_var then humi_raw_var:setValue(humi_raw, true) end
+  
+  local temp_avg_var = V('kamra_homerseklet')
+  local humi_avg_var = V('kamra_para')
+  
+  moving_average_update(chamber_temp_buffer, 'chamber_temp', temp_raw, temp_avg_var)
+  moving_average_update(chamber_humi_buffer, 'chamber_humi', humi_raw, humi_avg_var)
+  
+  local kamra_hibaszam = V('kamra_hibaszam')
+  if kamra_hibaszam then
+    kamra_hibaszam:setValue(C('max_error_count'), true)
+  end
+end
+
+-- ============================================================================
+-- PSYCHROMETRIC UPDATES
+-- ============================================================================
 
 local function update_chamber_psychrometric()
   local temp_var = V('kamra_homerseklet')
   local humi_var = V('kamra_para')
+  local dp_var = V('dp_kamra')
+  local ah_var = V('ah_kamra')
   
   if not temp_var or not humi_var then return end
   
@@ -619,92 +463,132 @@ local function update_chamber_psychrometric()
   local ah = calculate_absolute_humidity(temp_c, rh)
   local dp = calculate_dew_point(temp_c, rh)
   
-  local ah_dp_var = V('ah_dp_table')
-  if not ah_dp_var then return end
-  
-  local data = getTableValue(ah_dp_var)
-  data.kamra_ah = math.floor(ah * 100) / 100
-  data.kamra_dp = math.floor(dp * 10) / 10
-  ah_dp_var:setValue(data, true)
+  if ah_var then ah_var:setValue(round(ah * 1000), true) end
+  if dp_var then dp_var:setValue(round(dp * 10), true) end
 end
 
-local function process_supply_data(raw_temp, raw_humi)
-  local temp_changed = moving_average_update(
-    V('befujt_homerseklet_table'),
-    V('befujt_homerseklet_akt'),
-    raw_temp,
-    control.buffer_size_supply,
-    control.temp_threshold
-  )
+local function update_supply_psychrometric()
+  local temp_var = V('befujt_homerseklet_akt')
+  local humi_var = V('befujt_para_akt')
+  local ah_var = V('ah_befujt')
+  local dp_var = V('dp_befujt')
   
-  local humi_changed = moving_average_update(
-    V('befujt_para_table'),
-    V('befujt_para_akt'),
-    raw_humi,
-    control.buffer_size_supply,
-    control.humidity_threshold
-  )
+  if not temp_var or not humi_var then return end
   
-  if temp_changed or humi_changed then
-    update_supply_psychrometric()
+  local temp = temp_var:getValue() or 0
+  local humi = humi_var:getValue() or 0
+  
+  if temp == 0 or humi == 0 then return end
+  
+  local temp_c = temp / 10
+  local rh = humi / 10
+  
+  local ah = calculate_absolute_humidity(temp_c, rh)
+  local dp = calculate_dew_point(temp_c, rh)
+  
+  if ah_var then ah_var:setValue(round(ah * 1000), true) end
+  if dp_var then dp_var:setValue(round(dp * 10), true) end
+end
+
+local function update_target_psychrometric()
+  local temp_var = V('kamra_cel_homerseklet')
+  local humi_var = V('kamra_cel_para')
+  local dp_var = V('dp_cel')
+  local ah_var = V('ah_cel')
+  
+  if not temp_var or not humi_var then return end
+  
+  local temp = temp_var:getValue() or 0
+  local humi = humi_var:getValue() or 0
+  
+  if temp == 0 or humi == 0 then return end
+  
+  local temp_c = temp / 10
+  local rh = humi / 10
+  
+  local ah = calculate_absolute_humidity(temp_c, rh)
+  local dp = calculate_dew_point(temp_c, rh)
+  
+  if ah_var then ah_var:setValue(round(ah * 1000), true) end
+  if dp_var then dp_var:setValue(round(dp * 10), true) end
+end
+
+-- ============================================================================
+-- STATISTICS
+-- ============================================================================
+
+local previous_signals = {}
+
+local function record_sensor_stats()
+  local prefix = "chamber_" .. CHAMBER_ID .. "_"
+  
+  local kamra_hom_var = V('kamra_homerseklet')
+  if kamra_hom_var then
+    local temp = kamra_hom_var:getValue() or 0
+    statistics:addPoint(prefix .. "temp", temp / 10, unit.temp_c)
+  end
+  
+  local kamra_para_var = V('kamra_para')
+  if kamra_para_var then
+    local humi = kamra_para_var:getValue() or 0
+    statistics:addPoint(prefix .. "humidity", humi / 10, unit.percent)
+  end
+  
+  local ah_kamra_var = V('ah_kamra')
+  if ah_kamra_var then
+    local ah = ah_kamra_var:getValue() or 0
+    statistics:addPoint(prefix .. "ah", ah / 1000, unit.g_per_m3 or unit.percent)
   end
 end
 
-local function process_chamber_data(raw_temp, raw_humi)
-  local temp_changed = moving_average_update(
-    V('kamra_homerseklet_table'),
-    V('kamra_homerseklet'),
-    raw_temp,
-    control.buffer_size_chamber,
-    control.temp_threshold
-  )
+local function record_signal_changes(old_signals, new_signals)
+  local prefix = "chamber_" .. CHAMBER_ID .. "_"
   
-  local humi_changed = moving_average_update(
-    V('kamra_para_table'),
-    V('kamra_para'),
-    raw_humi,
-    control.buffer_size_chamber,
-    control.humidity_threshold
-  )
+  if old_signals.kamra_futes ~= new_signals.kamra_futes then
+    statistics:addPoint(prefix .. "heating", new_signals.kamra_futes and 1 or 0, unit.bool_unit)
+  end
   
-  if temp_changed or humi_changed then
-    update_chamber_psychrometric()
+  if old_signals.kamra_hutes ~= new_signals.kamra_hutes then
+    statistics:addPoint(prefix .. "cooling", new_signals.kamra_hutes and 1 or 0, unit.bool_unit)
+  end
+  
+  if old_signals.kamra_para_hutes ~= new_signals.kamra_para_hutes then
+    statistics:addPoint(prefix .. "dehumidify", new_signals.kamra_para_hutes and 1 or 0, unit.bool_unit)
+  end
+  
+  if old_signals.relay_humidifier ~= new_signals.relay_humidifier then
+    statistics:addPoint(prefix .. "humidifier", new_signals.relay_humidifier and 1 or 0, unit.bool_unit)
+  end
+  
+  if old_signals.humidity_mode ~= new_signals.humidity_mode then
+    local mode_names = {[0] = "FINE", [1] = "HUMID", [2] = "DRY"}
+    print("MODE: " .. (mode_names[old_signals.humidity_mode] or "?") .. " -> " .. (mode_names[new_signals.humidity_mode] or "?"))
   end
 end
 
 -- ============================================================================
--- MODBUS HANDLING
+-- MODBUS HANDLERS
 -- ============================================================================
 
-local function handle_supply_response(kind, addr, values)
-  if kind ~= "INPUT_REGISTERS" then return end
-  
-  -- Reset error counter on successful read
+local function handle_supply_response(request, values, kind, addr)
   local befujt_hibaszam = V('befujt_hibaszam')
   if befujt_hibaszam then
-    befujt_hibaszam:setValue(control.max_error_count, true)
+    befujt_hibaszam:setValue(C('max_error_count'), true)
   end
   
   local mb_cfg = config.modbus["chamber_" .. CHAMBER_ID]
-  
-  -- Single read returns both temp and humidity
   if addr == mb_cfg.reg_temperature and values[1] and values[2] then
     process_supply_data(values[1], values[2])
   end
 end
 
-local function handle_chamber_response(kind, addr, values)
-  if kind ~= "INPUT_REGISTERS" then return end
-  
-  -- Reset error counter on successful read
+local function handle_chamber_response(request, values, kind, addr)
   local kamra_hibaszam = V('kamra_hibaszam')
   if kamra_hibaszam then
-    kamra_hibaszam:setValue(control.max_error_count, true)
+    kamra_hibaszam:setValue(C('max_error_count'), true)
   end
   
   local mb_cfg = config.modbus["chamber_" .. CHAMBER_ID]
-  
-  -- Single read returns both temp and humidity
   if addr == mb_cfg.reg_temperature and values[1] and values[2] then
     process_chamber_data(values[1], values[2])
   end
@@ -714,7 +598,7 @@ local function handle_supply_error(request, err, kind, addr)
   if err == "TIMEOUT" or err == "BAD_CRC" then
     local befujt_hibaszam = V('befujt_hibaszam')
     if befujt_hibaszam then
-      local count = befujt_hibaszam:getValue() or control.max_error_count
+      local count = befujt_hibaszam:getValue() or C('max_error_count')
       if count > 0 then
         befujt_hibaszam:setValue(count - 1, true)
       end
@@ -726,7 +610,7 @@ local function handle_chamber_error(request, err, kind, addr)
   if err == "TIMEOUT" or err == "BAD_CRC" then
     local kamra_hibaszam = V('kamra_hibaszam')
     if kamra_hibaszam then
-      local count = kamra_hibaszam:getValue() or control.max_error_count
+      local count = kamra_hibaszam:getValue() or C('max_error_count')
       if count > 0 then
         kamra_hibaszam:setValue(count - 1, true)
       end
@@ -737,15 +621,10 @@ end
 local function poll_sensors()
   local mb_cfg = config.modbus["chamber_" .. CHAMBER_ID]
   
-  -- Always poll Modbus - averaging must continue even in simulation mode
-  -- so real values are immediately ready when simulation is turned off
-  
-  -- Poll supply air sensor (single read for both registers)
   if mb_supply then
     mb_supply:readInputRegistersAsync(mb_cfg.reg_temperature, 2)
   end
   
-  -- Poll chamber sensor (single read for both registers)
   if mb_chamber then
     mb_chamber:readInputRegistersAsync(mb_cfg.reg_temperature, 2)
   end
@@ -761,13 +640,8 @@ local function calculate_supply_targets()
   local kamra_hom_var = V('kamra_homerseklet')
   local kamra_para_var = V('kamra_para')
   local kulso_temp = V('kulso_homerseklet')
-  local kulso_ah_dp = V('kulso_ah_dp')
-  local constansok = V('constansok')
   
   if not kamra_cel_temp or not kamra_cel_humi or not kamra_hom_var or not kamra_para_var then
-    return
-  end
-  if not kulso_temp or not kulso_ah_dp or not constansok then
     return
   end
   
@@ -775,99 +649,55 @@ local function calculate_supply_targets()
   local kamra_cel_para = kamra_cel_humi:getValue() or 0
   local kamra_hom = kamra_hom_var:getValue() or 0
   local kamra_para = kamra_para_var:getValue() or 0
-  local kulso_hom = kulso_temp:getValue() or 0
-  local kulso_data = getTableValue(kulso_ah_dp)
-  local const = getTableValue(constansok)
+  local kulso_hom = kulso_temp and kulso_temp:getValue() or 0
   
   if kamra_cel_hom == 0 or kamra_cel_para == 0 then return end
   
-  -- =========================================================================
-  -- HUMIDITY-PRIMARY DEADZONE CONTROL
-  -- =========================================================================
-  -- Two modes based on whether chamber HUMIDITY is within deadzone of target:
-  --
-  -- 1. OUTSIDE DEADZONE (AH error too large):
-  --    Befujt_cél = Kamra_cél - (Kamra_mért - Kamra_cél) * P  where P = 1
-  --    Simplified: Befujt_cél = 2 * Kamra_cél - Kamra_mért
-  --    → Aggressive humidity correction, normal hysteresis
-  --    → Priority: fix humidity first (too dry = damage, too humid = mold)
-  --
-  -- 2. INSIDE DEADZONE (AH within range, fine control):
-  --    Befujt_cél = Kamra_cél - (Kamra_mért - Kamra_cél) * (1 - mix_ratio) 
-  --                          - (Külső_mért - Kamra_cél) * mix_ratio
-  --    → Fine-tune temperature, HALF hysteresis on supply
-  --    → Temperature control is secondary when humidity is OK
-  --
-  -- WHY HUMIDITY-PRIMARY ("Better cold than dry"):
-  --   - Too dry → irreversible product damage (surface cracking, case hardening)
-  --   - Too humid → mold risk, critical to address
-  --   - Too cold → just slows process, recoverable
-  --   - Product equilibrium depends on AH, not temperature
-  -- =========================================================================
-  
-  -- Calculate absolute humidity values for deadzone check
+  -- Calculate absolute humidity values
   local current_ah = calculate_absolute_humidity(kamra_hom / 10, kamra_para / 10)
   local target_ah = calculate_absolute_humidity(kamra_cel_hom / 10, kamra_cel_para / 10)
   
-  -- AH deadzone threshold (from config or default)
-  -- Default: 5% of target AH (e.g., 0.48 g/m³ for target 9.61 g/m³)
-  local ah_deadzone_percent = (const.ah_deadzone or 50) / 10  -- Default 5.0%
-  local ah_deadzone = target_ah * (ah_deadzone_percent / 100)
+  -- Get chamber AH deadzone and hysteresis from constants
+  local ah_deadzone = C('ah_deadzone_kamra') / 100
+  local ah_hysteresis = C('ah_hysteresis_kamra') / 100
   
-  -- Check if chamber humidity is within deadzone (humidity-primary)
-  local ah_error = math.abs(current_ah - target_ah)
-  local inside_ah_deadzone = ah_error <= ah_deadzone
+  -- Update humidity mode state machine
+  humidity_mode_state = update_humidity_mode(current_ah, target_ah, ah_deadzone, ah_hysteresis, humidity_mode_state)
   
-  -- Store deadzone state for hysteresis adjustment
-  inside_supply_deadzone = inside_ah_deadzone
-  
-  -- Calculate supply air target temperature
+  -- Calculate supply air target temperature based on mode
   local befujt_target_temp
+  local inside_ah_deadzone = (humidity_mode_state == MODE_FINE)
   
   if inside_ah_deadzone then
-    -- INSIDE AH DEADZONE: Fine control with outdoor mixing
-    -- Humidity is OK → now fine-tune temperature
-    -- Befujt_cél = Kamra_cél - (Kamra_mért - Kamra_cél) * (1 - mix) - (Külső - Kamra_cél) * mix
-    local mix_ratio = (const.outdoor_mix_ratio or 30) / 100
+    -- FINE MODE: Fine control with outdoor mixing
+    local mix_ratio = C('outdoor_mix_ratio') / 100
     local chamber_error = kamra_hom - kamra_cel_hom
     local outdoor_offset = kulso_hom - kamra_cel_hom
     
     befujt_target_temp = kamra_cel_hom - chamber_error * (1 - mix_ratio) - outdoor_offset * mix_ratio
   else
-    -- OUTSIDE AH DEADZONE: Aggressive proportional control
-    -- Humidity out of range → aggressive correction, temperature secondary
-    -- Befujt_cél = Kamra_cél - (Kamra_mért - Kamra_cél) * P, where P = 1
-    -- = 2 * Kamra_cél - Kamra_mért
-    local P = const.proportional_gain or 10  -- P gain * 10 (10 = 1.0)
+    -- HUMID or DRY MODE: Aggressive proportional control
+    local P = C('proportional_gain') / 10
     local chamber_error = kamra_hom - kamra_cel_hom
     
-    befujt_target_temp = kamra_cel_hom - chamber_error * (P / 10)
+    befujt_target_temp = kamra_cel_hom - chamber_error * P
   end
   
-  -- Apply minimum temperature constraint
-  local min_temp = const.min_supply_air_temp or 60
-  if befujt_target_temp < min_temp then
-    befujt_target_temp = min_temp
-  end
+  -- Apply temperature constraints
+  local min_temp = C('min_supply_air_temp')
+  local max_temp = C('max_supply_air_temp')
   
-  -- Apply maximum temperature constraint
-  local max_temp = const.max_supply_air_temp or 400  -- 40°C default max
-  if befujt_target_temp > max_temp then
-    befujt_target_temp = max_temp
-  end
-  
-  -- Calculate target absolute humidity (same for both modes)
-  local target_ah = calculate_absolute_humidity(kamra_cel_hom / 10, kamra_cel_para / 10)
+  if befujt_target_temp < min_temp then befujt_target_temp = min_temp end
+  if befujt_target_temp > max_temp then befujt_target_temp = max_temp end
   
   -- Calculate target humidity from target AH at supply temperature
   local befujt_target_rh = calculate_rh_from_ah(befujt_target_temp / 10, target_ah)
   local befujt_target_para = round(befujt_target_rh * 10)
   
-  -- Clamp humidity to valid range
   if befujt_target_para < 0 then befujt_target_para = 0 end
   if befujt_target_para > 1000 then befujt_target_para = 1000 end
   
-  -- Store targets (only propagate if changed beyond threshold)
+  -- Store targets
   local befujt_cel_temp_var = V('befujt_cel_homerseklet')
   local befujt_cel_para_var = V('befujt_cel_para')
   
@@ -876,19 +706,21 @@ local function calculate_supply_targets()
   
   if befujt_cel_temp_var then
     local old_temp = befujt_cel_temp_var:getValue() or 0
-    if math.abs(new_befujt_temp - old_temp) >= control.temp_threshold then
-      befujt_cel_temp_var:setValue(new_befujt_temp, false)  -- Propagate
+    local threshold = C('temp_change_threshold')
+    if math.abs(new_befujt_temp - old_temp) >= threshold then
+      befujt_cel_temp_var:setValue(new_befujt_temp, false)
     else
-      befujt_cel_temp_var:setValue(new_befujt_temp, true)   -- No propagation
+      befujt_cel_temp_var:setValue(new_befujt_temp, true)
     end
   end
   
   if befujt_cel_para_var then
     local old_para = befujt_cel_para_var:getValue() or 0
-    if math.abs(new_befujt_para - old_para) >= control.humidity_threshold then
-      befujt_cel_para_var:setValue(new_befujt_para, false)  -- Propagate
+    local threshold = C('humidity_change_threshold')
+    if math.abs(new_befujt_para - old_para) >= threshold then
+      befujt_cel_para_var:setValue(new_befujt_para, false)
     else
-      befujt_cel_para_var:setValue(new_befujt_para, true)   -- No propagation
+      befujt_cel_para_var:setValue(new_befujt_para, true)
     end
   end
 end
@@ -898,14 +730,17 @@ end
 -- ============================================================================
 
 function run_control_cycle()
-  -- Check sensor error states first
+  -- Reload constants (in case they changed)
+  loadConstants()
+  
+  -- Check sensor error states
   local kamra_hibaszam_var = V('kamra_hibaszam')
   local befujt_hibaszam_var = V('befujt_hibaszam')
   
   local kamra_hibaflag = kamra_hibaszam_var and (kamra_hibaszam_var:getValue() or 0) <= 0
   local befujt_hibaflag = befujt_hibaszam_var and (befujt_hibaszam_var:getValue() or 0) <= 0
   
-  -- Calculate supply targets (skip psychrometric calculations in error state)
+  -- Calculate supply targets
   if not kamra_hibaflag then
     calculate_supply_targets()
   end
@@ -920,10 +755,8 @@ function run_control_cycle()
   local befujt_cel_hom_var = V('befujt_cel_homerseklet')
   local befujt_cel_para_var = V('befujt_cel_para')
   local kulso_hom_var = V('kulso_homerseklet')
-  local kulso_para_var = V('kulso_para')
   local signals_var = V('signals')
   local cycle_var = V('cycle_variable')
-  local constansok_var = V('constansok')
   
   if not kamra_hom_var or not kamra_para_var or not signals_var then return end
   
@@ -936,12 +769,10 @@ function run_control_cycle()
   local befujt_cel_hom = befujt_cel_hom_var and befujt_cel_hom_var:getValue() or 0
   local befujt_cel_para = befujt_cel_para_var and befujt_cel_para_var:getValue() or 0
   local kulso_hom = kulso_hom_var and kulso_hom_var:getValue() or 0
-  local kulso_para = kulso_para_var and kulso_para_var:getValue() or 0
   local old_signals = getTableValue(signals_var)
   local cycle = getTableValue(cycle_var)
-  local const = getTableValue(constansok_var)
   
-  -- Error state fallback: use target as measured value (safe operation)
+  -- Error state fallback
   if kamra_hibaflag then
     kamra_hom = kamra_cel_hom
     kamra_para = kamra_cel_para
@@ -956,448 +787,325 @@ function run_control_cycle()
   local sum_wint_jel = HW.inp_sum_wint and HW.inp_sum_wint:getValue("state") == "on"
   local sleep = not cycle.aktiv
   
-  -- Chamber control with hysteresis
-  local kamra_hutes = hysteresis(
-    kamra_hom, kamra_cel_hom,
-    const.deltahi_kamra_homerseklet or 10,
-    const.deltalo_kamra_homerseklet or 10,
-    old_signals.kamra_hutes or false
-  )
+  -- CHAMBER TEMPERATURE CONTROL (Outer Loop)
+  local deltahi_temp = C('deltahi_kamra_homerseklet')
+  local deltalo_temp = C('deltalo_kamra_homerseklet')
+  local temp_hyst = C('temp_hysteresis_kamra')
   
-  local kamra_futes = hysteresis(
-    kamra_cel_hom, kamra_hom,
-    const.deltahi_kamra_homerseklet or 10,
-    const.deltalo_kamra_homerseklet or 10,
-    old_signals.kamra_futes or false
-  )
+  -- Cooling with directional hysteresis
+  local cooling_entry = kamra_hom > kamra_cel_hom + deltahi_temp
+  local cooling_exit = kamra_hom < kamra_cel_hom + temp_hyst
   
-  -- =========================================================================
-  -- DEHUMIDIFICATION CONTROL using ABSOLUTE HUMIDITY
-  -- =========================================================================
-  -- User configures hysteresis in RH% (intuitive), but comparison uses AH
-  -- This correctly handles temperature differences between current and target
-  --
-  -- Example: Target 18°C/70%, Current 20°C/68%
-  --   RH comparison: 68% < 70% → no dehumidify (WRONG!)
-  --   AH comparison: 11.7 > 10.8 g/m³ → dehumidify needed (CORRECT!)
-  -- =========================================================================
+  if cooling_entry then
+    temp_cooling_active = true
+  elseif cooling_exit then
+    temp_cooling_active = false
+  end
   
-  -- Calculate absolute humidity values
-  local current_ah = calculate_absolute_humidity(kamra_hom / 10, kamra_para / 10)
-  local target_ah = calculate_absolute_humidity(kamra_cel_hom / 10, kamra_cel_para / 10)
+  local kamra_hutes = temp_cooling_active
   
-  -- Convert RH% hysteresis thresholds to AH at TARGET temperature
-  -- This makes the hysteresis consistent regardless of current temperature
-  local deltahi_rh = const.deltahi_kamra_para or 15  -- User config: +1.5% RH
-  local deltalo_rh = const.deltalo_kamra_para or 10  -- User config: -1.0% RH
+  -- Heating with directional hysteresis
+  local heating_entry = kamra_hom < kamra_cel_hom - deltalo_temp
+  local heating_exit = kamra_hom > kamra_cel_hom - temp_hyst
   
-  local ah_at_hi = calculate_absolute_humidity(kamra_cel_hom / 10, (kamra_cel_para + deltahi_rh) / 10)
-  local ah_at_lo = calculate_absolute_humidity(kamra_cel_hom / 10, (kamra_cel_para - deltalo_rh) / 10)
+  if heating_entry then
+    temp_heating_active = true
+  elseif heating_exit then
+    temp_heating_active = false
+  end
   
-  local delta_ah_hi = ah_at_hi - target_ah  -- AH difference for high threshold
-  local delta_ah_lo = target_ah - ah_at_lo  -- AH difference for low threshold
+  local kamra_futes = temp_heating_active
   
-  local kamra_para_hutes = hysteresis(
-    current_ah, target_ah,
-    delta_ah_hi,
-    delta_ah_lo,
-    old_signals.kamra_para_hutes or false
-  )
+  -- HUMIDITY MODE (from state machine)
+  local kamra_para_hutes = (humidity_mode_state == MODE_HUMID)
+  local humidity_too_low = (humidity_mode_state == MODE_DRY)
   
-  -- Supply air control
-  local befujt_hutes = hysteresis(
-    befujt_hom, befujt_cel_hom,
-    const.deltahi_befujt_homerseklet or 20,
-    const.deltalo_befujt_homerseklet or 15,
-    old_signals.befujt_hutes or false
-  )
+  -- SUPPLY AIR CONTROL (Inner Loop)
+  local deltahi_supply = C('deltahi_befujt_homerseklet')
+  local deltalo_supply = C('deltalo_befujt_homerseklet')
+  local temp_hyst_supply = C('temp_hysteresis_befujt')
   
-  local befujt_futes = hysteresis(
-    befujt_cel_hom, befujt_hom,
-    const.deltahi_befujt_homerseklet or 20,
-    const.deltalo_befujt_homerseklet or 15,
-    old_signals.befujt_futes or false
-  )
+  -- Supply cooling
+  local supply_cool_entry = befujt_hom > befujt_cel_hom + deltahi_supply
+  local supply_cool_exit = befujt_hom < befujt_cel_hom + temp_hyst_supply
   
-  -- Determine control signals
-  -- =========================================================================
-  -- NON-NEGOTIABLE TEMPERATURE LIMIT:
-  -- If chamber temp > target + hysteresis → MUST COOL (water or outdoor air)
-  -- This is independent of humidity-primary mode selection!
-  -- Humidity-primary only affects supply air target calculation aggressiveness,
-  -- NOT the hard temperature safety limits.
-  -- =========================================================================
+  if supply_cool_entry then
+    supply_cooling_active = true
+  elseif supply_cool_exit then
+    supply_cooling_active = false
+  end
+  
+  local befujt_hutes = supply_cooling_active
+  
+  -- Supply heating
+  local supply_heat_entry = befujt_hom < befujt_cel_hom - deltalo_supply
+  local supply_heat_exit = befujt_hom > befujt_cel_hom - temp_hyst_supply
+  
+  if supply_heat_entry then
+    supply_heating_active = true
+  elseif supply_heat_exit then
+    supply_heating_active = false
+  end
+  
+  local befujt_futes = supply_heating_active
+  
+  -- COMBINE SIGNALS
   local cool = kamra_hutes or befujt_hutes
   local dehumi = kamra_para_hutes
   local warm = kamra_futes or befujt_futes
   
-  -- "Better cold than dry" strategy (when no humidifier installed)
-  -- Block heating if humidity is too low to prevent further drying
+  -- "Better cold than dry" (when no humidifier)
   local heating_blocked = false
-  if not hw_config.has_humidifier and warm then
-    local target_ah = calculate_absolute_humidity(kamra_cel_hom / 10, kamra_cel_para / 10)
-    local current_ah = calculate_absolute_humidity(kamra_hom / 10, kamra_para / 10)
-    local min_temp = const.min_temp_no_humidifier or 110  -- 11.0°C default
-    
-    -- Block heating if current AH < target AH (too dry) AND above minimum temp
-    if current_ah < target_ah and kamra_hom > min_temp then
+  if not C('humidifier_installed') and warm and humidity_too_low then
+    local min_temp = C('min_temp_no_humidifier')
+    if kamra_hom > min_temp then
       heating_blocked = true
       warm = false
     end
   end
   
-  -- Outdoor air beneficial for cooling
-  -- Use outdoor air when chamber is significantly warmer than outdoor
-  local outdoor_use_threshold = const.outdoor_use_threshold or 50  -- 5.0°C default
+  -- Outdoor air benefit check
+  local outdoor_use_threshold = C('outdoor_use_threshold')
   local outdoor_beneficial = (kamra_hom - kulso_hom) >= outdoor_use_threshold
   
-  -- Cooling strategy decision:
-  -- - Dehumidification (dehumi): ALWAYS use water cooling (0°C) - outdoor air cannot dehumidify
-  -- - Cooling only (cool and not dehumi): use outdoor air when beneficial
+  -- Cooling strategy
   local use_water_cooling = true
   local use_outdoor_air = false
   
   if dehumi then
-    -- Dehumidification: always water, never outdoor
     use_water_cooling = true
     use_outdoor_air = false
   elseif cool and outdoor_beneficial then
-    -- Cooling only with beneficial outdoor: use outdoor air
     use_water_cooling = false
     use_outdoor_air = true
   end
   
-  -- Humidification logic (INDEPENDENT from main control cycle)
-  -- Only when humidifier installed in this chamber
+  -- Humidification (only if installed)
   local humidification = false
-  if hw_config.has_humidifier then
-    -- Compare at target temperature using AH (physically correct)
-    local target_ah = calculate_absolute_humidity(kamra_cel_hom / 10, kamra_cel_para / 10)
+  if C('humidifier_installed') and humidity_too_low then
     local current_ah = calculate_absolute_humidity(kamra_hom / 10, kamra_para / 10)
+    local target_ah = calculate_absolute_humidity(kamra_cel_hom / 10, kamra_cel_para / 10)
+    local exit_threshold = target_ah + C('ah_hysteresis_kamra') / 100
     
-    -- Calculate AH threshold for "5% RH below target at target temp"
-    local start_delta_rh = const.humidifier_start_delta or 50  -- 5.0% RH default
-    local start_rh = (kamra_cel_para - start_delta_rh) / 10    -- Target RH - 5%
-    local start_ah = calculate_absolute_humidity(kamra_cel_hom / 10, start_rh)
-    
-    -- Get current humidifier state
-    local signals_var = V('signals')
-    local current_humidifier = signals_var and signals_var:getValue() and signals_var:getValue().relay_humidifier or false
-    
-    -- Hysteresis: ON when below start threshold, OFF when target reached
+    local current_humidifier = old_signals.relay_humidifier or false
     if current_humidifier then
-      -- Currently ON: keep running until target AH reached
-      humidification = current_ah < target_ah
+      humidification = current_ah < exit_threshold
     else
-      -- Currently OFF: start only when significantly below target
-      humidification = current_ah < start_ah
+      humidification = true
     end
   end
   
-  -- Generate relay signals
-  -- Note: sum_wint_jel only affects main fan speed (hardware wiring difference)
-  -- Summer = lighter air = higher fan speed, Winter = denser air = lower fan speed
-  -- All other control logic is identical year-round
+  -- BUILD SIGNALS
   local new_signals = {
     kamra_hutes = kamra_hutes,
     kamra_futes = kamra_futes,
     kamra_para_hutes = kamra_para_hutes,
     befujt_hutes = befujt_hutes,
     befujt_futes = befujt_futes,
-    cool = cool,
-    dehumi = dehumi,
-    warm = warm,
-    sleep = sleep,
-    sum_wint_jel = sum_wint_jel,
-    humi_save = humi_save,
-    outdoor_beneficial = outdoor_beneficial,
-    use_water_cooling = use_water_cooling,
-    use_outdoor_air = use_outdoor_air,
-    humidification = humidification,
-    heating_blocked = heating_blocked,
-    kamra_hibaflag = kamra_hibaflag,
-    befujt_hibaflag = befujt_hibaflag,
-    relay_warm = warm and not sleep,
-    -- Water cooling needed for cooling OR dehumidification
     relay_cool = (cool or dehumi) and not sleep and use_water_cooling,
+    relay_warm = warm and not sleep,
     relay_add_air_max = use_outdoor_air and not humi_save,
     relay_reventon = humi_save,
     relay_add_air_save = humi_save,
-    -- Bypass: OFF=0°C (dehumidify), ON=8°C (cooling only)
-    -- When using outdoor air, bypass state doesn't matter (water not used)
     relay_bypass_open = humi_save or (cool and not dehumi),
-    relay_main_fan = sum_wint_jel,  -- Hardware: summer=high speed, winter=low speed
-    relay_humidifier = humidification,
-    relay_sleep = sleep,
+    relay_main_fan = sum_wint_jel,
+    relay_humidifier = humidification and not sleep,
+    sleep = sleep,
+    heating_blocked = heating_blocked,
+    humidity_mode = humidity_mode_state,
+    init_complete = init_complete,
   }
   
-  -- Check if any signal changed
-  local signals_changed = false
-  for key, value in pairs(new_signals) do
-    if old_signals[key] ~= value then
-      signals_changed = true
-      break
+  -- Calculate initialization countdown
+  local init_countdown = 0
+  if not init_complete and init_start_time then
+    local elapsed = os.time() - init_start_time
+    local init_duration = C('init_duration') or 32
+    init_countdown = math.max(0, init_duration - elapsed)
+  end
+  new_signals.init_countdown = init_countdown
+  
+  -- Record stats
+  record_signal_changes(old_signals, new_signals)
+  
+  -- Store signals
+  signals_var:setValue(JSON:encode(new_signals), true)
+  
+  -- Apply to SBUS
+  -- During initialization OR sleep: all relays OFF
+  if not init_complete or sleep then
+    if HW.rel_cool then HW.rel_cool:setValue("state", "off") end
+    if HW.rel_warm then HW.rel_warm:setValue("state", "off") end
+    if HW.rel_add_air_max then HW.rel_add_air_max:setValue("state", "off") end
+    if HW.rel_reventon then HW.rel_reventon:setValue("state", "off") end
+    if HW.rel_add_air_save then HW.rel_add_air_save:setValue("state", "off") end
+    if HW.rel_bypass_open then HW.rel_bypass_open:setValue("state", "off") end
+    if HW.rel_main_fan then HW.rel_main_fan:setValue("state", "off") end
+    if HW.rel_humidifier then HW.rel_humidifier:setValue("state", "off") end
+  else
+    -- Normal operation: apply control signals
+    if HW.rel_cool then HW.rel_cool:setValue("state", new_signals.relay_cool and "on" or "off") end
+    if HW.rel_warm then HW.rel_warm:setValue("state", new_signals.relay_warm and "on" or "off") end
+    if HW.rel_add_air_max then HW.rel_add_air_max:setValue("state", new_signals.relay_add_air_max and "on" or "off") end
+    if HW.rel_reventon then HW.rel_reventon:setValue("state", new_signals.relay_reventon and "on" or "off") end
+    if HW.rel_add_air_save then HW.rel_add_air_save:setValue("state", new_signals.relay_add_air_save and "on" or "off") end
+    if HW.rel_bypass_open then HW.rel_bypass_open:setValue("state", new_signals.relay_bypass_open and "on" or "off") end
+    if HW.rel_main_fan then HW.rel_main_fan:setValue("state", new_signals.relay_main_fan and "on" or "off") end
+    if HW.rel_humidifier then HW.rel_humidifier:setValue("state", new_signals.relay_humidifier and "on" or "off") end
+  end
+end
+
+-- ============================================================================
+-- UI REFRESH
+-- ============================================================================
+
+local function refresh_ui(device)
+  local function updateElement(name, value)
+    local elem = device:getElement(name)
+    if elem then
+      elem:setValue('value', value, true)
     end
   end
   
-  -- Save signals and apply relays (only if changed)
-  if signals_changed then
-    -- Log control actions to statistics
-    log_control_action(old_signals, new_signals)
-    
-    signals_var:setValue(new_signals, false)
-    apply_relay_outputs(new_signals)
-  end
-  
-  return signals_changed
-end
-
--- ============================================================================
--- RELAY OUTPUT
--- ============================================================================
-
-function apply_relay_outputs(signals)
-  set_relay(signals.relay_warm, HW.rel_warm)
-  set_relay(signals.relay_cool, HW.rel_cool)
-  set_relay(signals.relay_add_air_max, HW.rel_add_air_max)
-  set_relay(signals.relay_reventon, HW.rel_reventon)
-  set_relay(signals.relay_add_air_save, HW.rel_add_air_save)
-  set_relay(signals.relay_bypass_open, HW.rel_bypass_open)
-  set_relay(signals.relay_main_fan, HW.rel_main_fan)
-  set_relay(signals.relay_humidifier, HW.rel_humidifier)
-  set_relay(signals.relay_sleep, HW.rel_sleep)
-end
-
--- ============================================================================
--- SLEEP CYCLE MANAGEMENT
--- ============================================================================
-
-local function advance_sleep_cycle()
-  local cycle_var = V('cycle_variable')
+  local kamra_hom = V('kamra_homerseklet')
+  local kamra_para = V('kamra_para')
+  local ah_kamra = V('ah_kamra')
   local signals_var = V('signals')
   
-  if not cycle_var or not signals_var then return end
-  
-  local cycle = getTableValue(cycle_var)
-  
-  if cycle.vez_aktiv then
-    return  -- Manual control active
+  if kamra_hom then
+    local temp = kamra_hom:getValue() or 0
+    updateElement('_3_tx_kamra_homerseklet_', string.format("%.1f°C", temp / 10))
   end
   
-  local szamlalo = cycle.szamlalo or cycle.action_time or 540
-  szamlalo = szamlalo - 1
+  if kamra_para then
+    local humi = kamra_para:getValue() or 0
+    updateElement('_4_tx_kamra_para_', string.format("%.1f%%", humi / 10))
+  end
   
-  if szamlalo <= 0 then
-    if cycle.aktiv then
-      cycle.aktiv = false
-      cycle.szamlalo = cycle.passiv_time or 60
-    else
-      cycle.aktiv = true
-      cycle.szamlalo = cycle.action_time or 540
+  if ah_kamra then
+    local ah = ah_kamra:getValue() or 0
+    updateElement('ah_kamra_tx', string.format("AH: %.2f g/m³", ah / 1000))
+  end
+  
+  if signals_var then
+    local signals = getTableValue(signals_var)
+    
+    updateElement('text_input_0_warm', signals.kamra_futes and "Fűtés Aktív!" or " ")
+    updateElement('text_input_1_cool', signals.kamra_hutes and "Hűtés Aktív!" or " ")
+    updateElement('text_input_2_wdis', signals.kamra_para_hutes and "Párátlanítás!" or " ")
+    updateElement('text_input_3_cdis', signals.relay_humidifier and "Párásítás!" or " ")
+    
+    local mode_names = {[0] = "FINOM", [1] = "PÁRÁS", [2] = "SZÁRAZ"}
+    updateElement('humidity_mode_tx', "Mód: " .. (mode_names[signals.humidity_mode] or "?"))
+  end
+end
+
+-- ============================================================================
+-- MAIN POLL HANDLER
+-- ============================================================================
+
+local function on_poll_timer()
+  -- Track initialization time
+  if init_start_time == nil then
+    init_start_time = os.time()
+    print("INIT: Starting " .. C('init_duration') .. "s initialization period")
+  end
+  
+  -- Check if initialization is complete
+  if not init_complete then
+    local elapsed = os.time() - init_start_time
+    local init_duration = C('init_duration') or 32
+    if elapsed >= init_duration then
+      init_complete = true
+      print("INIT: Initialization complete, enabling relay control")
     end
-  else
-    cycle.szamlalo = szamlalo
   end
   
-  -- Update sleep signal if changed
-  local old_signals = getTableValue(signals_var)
-  if old_signals.sleep ~= (not cycle.aktiv) then
-    old_signals.sleep = not cycle.aktiv
-    signals_var:setValue(old_signals, false)
+  poll_sensors()
+  
+  update_chamber_psychrometric()
+  update_supply_psychrometric()
+  update_target_psychrometric()
+  
+  run_control_cycle()
+  
+  stats_counter = stats_counter + 1
+  if stats_counter >= STATS_INTERVAL then
+    record_sensor_stats()
+    stats_counter = 0
   end
   
-  cycle_var:setValue(cycle, true)
+  if poll_timer then
+    poll_timer:start(POLL_INTERVAL)
+  end
 end
 
 -- ============================================================================
 -- INITIALIZATION
 -- ============================================================================
 
-local function init_hardware_shortcuts()
-  -- Use SBUS_CONFIG defined at top of file
-  HW.inp_humidity_save = SBUS_CONFIG.inp_humidity_save and sbus[SBUS_CONFIG.inp_humidity_save]
-  HW.inp_sum_wint = SBUS_CONFIG.inp_sum_wint and sbus[SBUS_CONFIG.inp_sum_wint]
-  HW.inp_weight_1 = SBUS_CONFIG.inp_weight_1 and sbus[SBUS_CONFIG.inp_weight_1]
-  HW.inp_weight_2 = SBUS_CONFIG.inp_weight_2 and sbus[SBUS_CONFIG.inp_weight_2]
-  HW.rel_warm = SBUS_CONFIG.rel_warm and sbus[SBUS_CONFIG.rel_warm]
-  HW.rel_cool = SBUS_CONFIG.rel_cool and sbus[SBUS_CONFIG.rel_cool]
-  HW.rel_add_air_max = SBUS_CONFIG.rel_add_air_max and sbus[SBUS_CONFIG.rel_add_air_max]
-  HW.rel_reventon = SBUS_CONFIG.rel_reventon and sbus[SBUS_CONFIG.rel_reventon]
-  HW.rel_add_air_save = SBUS_CONFIG.rel_add_air_save and sbus[SBUS_CONFIG.rel_add_air_save]
-  HW.rel_bypass_open = SBUS_CONFIG.rel_bypass_open and sbus[SBUS_CONFIG.rel_bypass_open]
-  HW.rel_main_fan = SBUS_CONFIG.rel_main_fan and sbus[SBUS_CONFIG.rel_main_fan]
-  HW.rel_humidifier = SBUS_CONFIG.rel_humidifier and sbus[SBUS_CONFIG.rel_humidifier]
-  HW.rel_sleep = SBUS_CONFIG.rel_sleep and sbus[SBUS_CONFIG.rel_sleep]
-end
-
--- ============================================================================
--- CUSTOM DEVICE CALLBACKS
--- ============================================================================
-
 function CustomDevice:onInit()
-  print("=== ERLELO CHAMBER " .. CHAMBER_ID .. " v2.4 ===")
-  print("Humidity-Primary Control")
+  print("=== ERLELO CHAMBER CONTROLLER v2.5 ===")
+  print("Chamber ID: " .. CHAMBER_ID)
+  print("All parameters from constansok variable")
   
-  -- Check required configuration
-  if not MAPPING_VAR_ID then
-    print("ERROR: MAPPING_VAR_ID not set!")
-    print("1. Run erlelo_store first")
-    print("2. Note the printed variable ID")
-    print("3. Set MAPPING_VAR_ID at top of this file")
-    return
+  -- Load constants
+  if loadConstants() then
+    print("  Loaded " .. (cached_const and "custom" or "default") .. " constants")
+    print("  Buffer size: " .. C('buffer_size'))
+    print("  AH deadzone (chamber): " .. C('ah_deadzone_kamra')/100 .. " g/m³")
+    print("  Init duration: " .. C('init_duration') .. " seconds")
+  else
+    print("  Using default constants (constansok not found)")
   end
   
-  -- Load variable mapping
-  local map = loadVarMap()
-  if not map then
-    print("ERROR: Failed to load variable mapping")
-    return
+  print("*** SAFE INIT: All relays OFF for " .. C('init_duration') .. "s ***")
+  
+  -- Initialize SBUS
+  for name, id in pairs(SBUS_CONFIG) do
+    if id then
+      HW[name] = sbus[id]
+      if HW[name] then
+        print("  SBUS " .. name .. " -> ID " .. id)
+      end
+    end
   end
-  print("Variable mapping loaded: " .. (VAR_MAP and "OK" or "FAIL"))
   
-  -- Initialize hardware shortcuts from SBUS_CONFIG
-  init_hardware_shortcuts()
-  print("SBUS hardware initialized")
-  
-  -- Get Modbus clients
+  -- Initialize Modbus
   if MODBUS_SUPPLY_CLIENT then
-    mb_supply = modbus_client[MODBUS_SUPPLY_CLIENT]
+    mb_supply = modbus[MODBUS_SUPPLY_CLIENT]
     if mb_supply then
-      mb_supply:onRegisterAsyncRead(handle_supply_response)
-      mb_supply:onAsyncRequestFailure(handle_supply_error)
-      print("Supply Modbus client: " .. MODBUS_SUPPLY_CLIENT)
-    else
-      print("WARNING: Supply Modbus client " .. MODBUS_SUPPLY_CLIENT .. " not found")
+      mb_supply:onResponse(handle_supply_response)
+      mb_supply:onError(handle_supply_error)
+      print("  Modbus supply: ID " .. MODBUS_SUPPLY_CLIENT)
     end
   end
   
   if MODBUS_CHAMBER_CLIENT then
-    mb_chamber = modbus_client[MODBUS_CHAMBER_CLIENT]
+    mb_chamber = modbus[MODBUS_CHAMBER_CLIENT]
     if mb_chamber then
-      mb_chamber:onRegisterAsyncRead(handle_chamber_response)
-      mb_chamber:onAsyncRequestFailure(handle_chamber_error)
-      print("Chamber Modbus client: " .. MODBUS_CHAMBER_CLIENT)
-    else
-      print("WARNING: Chamber Modbus client " .. MODBUS_CHAMBER_CLIENT .. " not found")
+      mb_chamber:onResponse(handle_chamber_response)
+      mb_chamber:onError(handle_chamber_error)
+      print("  Modbus chamber: ID " .. MODBUS_CHAMBER_CLIENT)
     end
   end
   
-  -- Get timer and start polling
-  poll_timer = self:getComponent("timer")
+  -- Start timer
+  poll_timer = CustomDevice.getComponent(CustomDevice, "timer")
   
-  -- Start with staggered offset based on chamber ID
-  local poll_offset = 500 * CHAMBER_ID  -- 500ms, 1000ms, 1500ms for chambers 1,2,3
+  local poll_offset = 500 * CHAMBER_ID
   if poll_timer then
     poll_timer:start(poll_offset)
-    print("Polling starts in " .. poll_offset .. "ms")
+    print("  Timer started (offset " .. poll_offset .. "ms)")
   end
   
-  print("=== Chamber " .. CHAMBER_ID .. " initialization complete ===")
+  print("=== INITIALIZATION COMPLETE ===")
 end
 
-function CustomDevice:onEvent(event)
-  -- Timer elapsed - poll sensors
-  if event.type == "lua_timer_elapsed" then
-    poll_sensors()
-    advance_sleep_cycle()
-    
-    -- Statistics recording and UI refresh (every STATS_INTERVAL polls = ~30 sec)
-    stats_counter = stats_counter + 1
-    if stats_counter >= STATS_INTERVAL then
-      stats_counter = 0
-      record_statistics()
-      refresh_ui(self)
-      print("STATS: Recorded statistics and refreshed UI for chamber " .. CHAMBER_ID)
-    end
-    
-    if poll_timer then
-      poll_timer:start(POLL_INTERVAL)
-    end
-    return
-  end
-  
-  -- Variable changed - check if control cycle needed
-  if event.type == "lua_variable_state_changed" then
-    local src_id = event.source.id
-    local map = loadVarMap()
-    if not map then return end
-    
-    local watch_vars = {
-      "kamra_homerseklet",
-      "kamra_para",
-      "befujt_homerseklet_akt",
-      "befujt_para_akt",
-      "kamra_cel_homerseklet",
-      "kamra_cel_para",
-      "kulso_homerseklet",
-      "kulso_para",
-    }
-    
-    for _, var_name in ipairs(watch_vars) do
-      local full_name = var_name .. "_ch" .. CHAMBER_ID
-      local idx = map[full_name]
-      if not idx then
-        idx = map[var_name]  -- Try without chamber suffix (for shared vars)
-      end
-      if idx and src_id == idx then
-        run_control_cycle()
-        return
-      end
-    end
-  end
-  
-  -- SBUS input changed
-  if event.type == "device_state_changed" and event.source.type == "sbus" and hw_config then
-    local src_id = event.source.id
-    if src_id == hw_config.inp_humidity_save or src_id == hw_config.inp_sum_wint then
-      run_control_cycle()
-    end
-  end
+function CustomDevice:onTimer()
+  on_poll_timer()
 end
 
--- ============================================================================
--- UI ELEMENT CALLBACKS
--- ============================================================================
-
-function CustomDevice:onTargetTempChange(newValue, element)
-  local kamra_cel_hom = V('kamra_cel_homerseklet')
-  if kamra_cel_hom then
-    local raw_value = round(newValue * 10)
-    kamra_cel_hom:setValue(raw_value, false)
-  end
-end
-
-function CustomDevice:onTargetHumiChange(newValue, element)
-  local kamra_cel_para = V('kamra_cel_para')
-  if kamra_cel_para then
-    local raw_value = round(newValue * 10)
-    kamra_cel_para:setValue(raw_value, false)
-  end
-end
-
-function CustomDevice:onSleepManualToggle(newValue, element)
-  local cycle_var = V('cycle_variable')
-  local signals_var = V('signals')
-  
-  if cycle_var then
-    local cycle = getTableValue(cycle_var)
-    cycle.vez_aktiv = true
-    cycle.aktiv = not newValue
-    cycle_var:setValue(cycle, true)
-  end
-  
-  if signals_var then
-    local signals = getTableValue(signals_var)
-    signals.sleep = newValue
-    signals_var:setValue(signals, false)
-  end
-end
-
-function CustomDevice:onSleepAutoEnable(newValue, element)
-  local cycle_var = V('cycle_variable')
-  if cycle_var then
-    local cycle = getTableValue(cycle_var)
-    cycle.vez_aktiv = not newValue
-    cycle_var:setValue(cycle, true)
-  end
+function CustomDevice:onRefresh()
+  refresh_ui(self)
 end

@@ -1,5 +1,5 @@
 --[[
-    ERLELO VARIABLE DELETE v2.4
+    ERLELO VARIABLE DELETE v2.5
     
     Reads variable_name_map_glbl from local Sinum variable (created by erlelo_store),
     then deletes ONLY the variables listed in that map.
@@ -15,17 +15,18 @@
     ============================================================
     UI SETUP - Add these elements in the device editor:
     ============================================================
-    1. Add Button element:
+    1. Add HTTP Client component:
+       - Name: http (must be exactly "http")
+    
+    2. Add Button element:
        - Name: btn_start
        - Text: "Delete Erlelo"
        - Icon: power
        - On Press: onStartPress
     
-    2. Add Text element:
+    3. Add Text element:
        - Name: status_text
        - Value: "Ready"
-    
-    3. Arrange in widget layout (column, centered)
     ============================================================
     
     PREREQUISITE: erlelo_store must have been run first to create the mapping!
@@ -35,25 +36,40 @@
 local API_BASE = 'http://192.168.0.122/api/v1'
 local TOKEN = 'YOUR_API_TOKEN_HERE'  -- Replace with your API token
 
+-- Module-level state (like working code pattern)
 local http = nil
-local state = nil
+local state = { step = 'idle', name_to_id = nil, delete_count = 0 }
 
 function CustomDevice:onInit()
-    print('=== ERLELO SELECTIVE DELETE v2.4 ===')
+    print('=== ERLELO SELECTIVE DELETE v2.5 ===')
     print('Uses variable_name_map created by erlelo_store')
     print('Press "Delete Erlelo" button to begin')
-    http = self:getComponent('http')
-    state = { step = 'idle', name_to_id = nil, delete_count = 0 }
     
-    local status = self:getElement('status_text')
-    if status then
-        status:setValue('value', 'Ready - Press Delete', true)
+    http = CustomDevice.getComponent(CustomDevice, 'http')
+    
+    if not http then
+        print('WARNING: HTTP component not found at init')
+        print('Add HTTP Client component named "http" in device editor')
+    end
+    
+    local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+    if statusEl then
+        statusEl:setValue('value', 'Ready - Press Delete', true)
     end
 end
 
 function CustomDevice:onStartPress()
+    -- Try to get http again in case it wasn't ready at init
+    if not http then
+        http = CustomDevice.getComponent(CustomDevice, 'http')
+    end
+    
     if not http then
         print('ERROR: HTTP component not available')
+        local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+        if statusEl then
+            statusEl:setValue('value', 'ERROR: No HTTP component', true)
+        end
         return
     end
     
@@ -63,12 +79,12 @@ function CustomDevice:onStartPress()
     end
     
     print('[1] Fetching variables to find variable_name_map...')
-    state.step = 'find_map'
+    state.step = 'fetch_vars'
     state.delete_count = 0
     
-    local status = self:getElement('status_text')
-    if status then
-        status:setValue('value', 'Finding name map...', true)
+    local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+    if statusEl then
+        statusEl:setValue('value', 'Finding name map...', true)
     end
     
     http:GET(API_BASE .. '/lua/variables')
@@ -78,10 +94,11 @@ function CustomDevice:onStartPress()
 end
 
 function CustomDevice:onEvent(event)
-    if not http or not state then return end
+    if not http then return end
+    if not state then return end
     
     http:onMessage(function(status_code, payload, url)
-        local statusEl = self:getElement('status_text')
+        local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
         
         if status_code ~= 200 then
             print('ERROR: HTTP ' .. tostring(status_code))
@@ -92,7 +109,7 @@ function CustomDevice:onEvent(event)
             return
         end
         
-        if state.step == 'find_map' then
+        if state.step == 'fetch_vars' then
             local ok, resp = pcall(function() return JSON:decode(payload) end)
             if not ok or not resp or not resp.data then
                 print('ERROR: Failed to parse API response')

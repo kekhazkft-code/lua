@@ -1,22 +1,41 @@
 {
-  "version": "2.4",
-  "description": "Erlelo 2-chamber climate control - Humidity-Primary Control",
+  "version": "2.5",
+  "description": "Erlelo 2-chamber climate control - v2.5 Dual-Layer Cascade",
   "num_chambers": 2,
+  "v25_features": {
+    "dual_layer_cascade": true,
+    "directional_hysteresis": true,
+    "humidity_state_machine": true,
+    "buffer_size": 5
+  },
   "default_control_constants": {
-    "deltahi_kamra_homerseklet": 10,
+    "deltahi_kamra_homerseklet": 15,
     "deltalo_kamra_homerseklet": 10,
-    "deltahi_befujt_homerseklet": 20,
-    "deltalo_befujt_homerseklet": 15,
-    "deltahi_kamra_para": 15,
-    "deltalo_kamra_para": 10,
-    "ah_deadzone": 50,
+    "temp_hysteresis_kamra": 5,
+    "ah_deadzone_kamra": 80,
+    "ah_hysteresis_kamra": 30,
+    "deltahi_befujt_homerseklet": 10,
+    "deltalo_befujt_homerseklet": 10,
+    "temp_hysteresis_befujt": 3,
+    "ah_deadzone_befujt": 50,
+    "ah_hysteresis_befujt": 20,
     "outdoor_mix_ratio": 30,
-    "outdoor_temp_threshold": 50,
-    "P": 20,
+    "outdoor_use_threshold": 50,
+    "proportional_gain": 10,
+    "min_supply_air_temp": 60,
+    "max_supply_air_temp": 400,
+    "min_temp_no_humidifier": 110,
+    "buffer_size": 5,
+    "spike_threshold": 50,
+    "max_error_count": 10,
+    "temp_change_threshold": 2,
+    "humidity_change_threshold": 5,
     "humidifier_installed": false,
+    "humidifier_start_delta": 50,
     "sleep_cycle_enabled": false,
     "sleep_on_minutes": 45,
-    "sleep_off_minutes": 15
+    "sleep_off_minutes": 15,
+    "init_duration": 32
   },
   "naming_convention": {
     "chamber_specific": "_ch1, _ch2, _ch3",
@@ -27,25 +46,37 @@
       "name": "kamra_homerseklet_ch1",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 1: Chamber temperature ×10"
+      "description": "Chamber 1: Chamber temperature \u00d710"
     },
     {
       "name": "kamra_para_ch1",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 1: Chamber humidity ×10"
+      "description": "Chamber 1: Chamber humidity \u00d710"
+    },
+    {
+      "name": "kamra_homerseklet_raw_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Raw chamber temperature"
+    },
+    {
+      "name": "kamra_para_raw_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Raw chamber humidity"
     },
     {
       "name": "kamra_cel_homerseklet_ch1",
       "type": "integer",
       "default_value": 150,
-      "description": "Chamber 1: Target chamber temp ×10 (15.0°C)"
+      "description": "Chamber 1: Target chamber temp \u00d710 (15.0\u00b0C)"
     },
     {
       "name": "kamra_cel_para_ch1",
       "type": "integer",
       "default_value": 750,
-      "description": "Chamber 1: Target chamber humidity ×10 (75.0%)"
+      "description": "Chamber 1: Target chamber humidity \u00d710 (75.0%)"
     },
     {
       "name": "befujt_cel_homerseklet_ch1",
@@ -72,46 +103,58 @@
       "description": "Chamber 1: Current supply air humidity"
     },
     {
+      "name": "befujt_homerseklet_raw_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Raw supply air temperature"
+    },
+    {
+      "name": "befujt_para_raw_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Raw supply air humidity"
+    },
+    {
       "name": "befujt_homerseklet_table_ch1",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 1: Supply air temp moving average buffer"
+      "description": "Chamber 1: Supply air temp buffer"
     },
     {
       "name": "befujt_para_table_ch1",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 1: Supply air humidity moving average buffer"
+      "description": "Chamber 1: Supply air humidity buffer"
     },
     {
       "name": "kamra_homerseklet_table_ch1",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 1: Chamber temp moving average buffer"
+      "description": "Chamber 1: Chamber temp buffer"
     },
     {
       "name": "kamra_para_table_ch1",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 1: Chamber humidity moving average buffer"
+      "description": "Chamber 1: Chamber humidity buffer"
     },
     {
       "name": "befujt_hibaszam_ch1",
       "type": "integer",
-      "default_value": 3,
-      "description": "Chamber 1: Supply air sensor error count"
+      "default_value": 10,
+      "description": "Chamber 1: Supply sensor error count"
     },
     {
       "name": "kamra_hibaszam_ch1",
       "type": "integer",
-      "default_value": 3,
+      "default_value": 10,
       "description": "Chamber 1: Chamber sensor error count"
     },
     {
       "name": "constansok_ch1",
       "type": "string",
-      "default_value": "{\"deltahi_kamra_homerseklet\":10,\"deltalo_kamra_homerseklet\":10,\"deltahi_befujt_homerseklet\":20,\"deltalo_befujt_homerseklet\":15,\"deltahi_kamra_para\":15,\"deltalo_kamra_para\":10,\"ah_deadzone\":50,\"outdoor_mix_ratio\":30,\"outdoor_temp_threshold\":50,\"P\":20,\"humidifier_installed\":false,\"sleep_cycle_enabled\":false,\"sleep_on_minutes\":45,\"sleep_off_minutes\":15}",
-      "description": "Chamber 1: Control constants JSON"
+      "default_value": "{\"deltahi_kamra_homerseklet\":15,\"deltalo_kamra_homerseklet\":10,\"temp_hysteresis_kamra\":5,\"ah_deadzone_kamra\":80,\"ah_hysteresis_kamra\":30,\"deltahi_befujt_homerseklet\":10,\"deltalo_befujt_homerseklet\":10,\"temp_hysteresis_befujt\":3,\"ah_deadzone_befujt\":50,\"ah_hysteresis_befujt\":20,\"outdoor_mix_ratio\":30,\"outdoor_use_threshold\":50,\"proportional_gain\":10,\"min_supply_air_temp\":60,\"max_supply_air_temp\":400,\"min_temp_no_humidifier\":110,\"buffer_size\":5,\"spike_threshold\":50,\"max_error_count\":10,\"temp_change_threshold\":2,\"humidity_change_threshold\":5,\"humidifier_installed\":false,\"humidifier_start_delta\":50,\"sleep_cycle_enabled\":false,\"sleep_on_minutes\":45,\"sleep_off_minutes\":15,\"init_duration\":32}",
+      "description": "Chamber 1: Control constants JSON (v2.5)"
     },
     {
       "name": "signals_ch1",
@@ -122,14 +165,50 @@
     {
       "name": "cycle_variable_ch1",
       "type": "string",
-      "default_value": "{}",
-      "description": "Chamber 1: Sleep cycle state"
+      "default_value": "{\"aktiv\":true}",
+      "description": "Chamber 1: Cycle state"
+    },
+    {
+      "name": "ah_kamra_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Chamber absolute humidity \u00d71000 (mg/m\u00b3)"
+    },
+    {
+      "name": "ah_befujt_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Supply absolute humidity \u00d71000"
+    },
+    {
+      "name": "ah_cel_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Target absolute humidity \u00d71000"
+    },
+    {
+      "name": "dp_kamra_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Chamber dew point \u00d710"
+    },
+    {
+      "name": "dp_befujt_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Supply dew point \u00d710"
+    },
+    {
+      "name": "dp_cel_ch1",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 1: Target dew point \u00d710"
     },
     {
       "name": "ah_dp_table_ch1",
       "type": "string",
       "default_value": "{}",
-      "description": "Chamber 1: Absolute humidity & dew point"
+      "description": "Chamber 1: AH/DP calculation cache"
     },
     {
       "name": "suly_meres_table_1_ch1",
@@ -144,100 +223,52 @@
       "description": "Chamber 1: Weight sensor 2 buffer"
     },
     {
-      "name": "atlagsuly_1_ch1",
+      "name": "suly_meres_akt_1_ch1",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 1: Average weight 1"
+      "description": "Chamber 1: Weight sensor 1 current"
     },
     {
-      "name": "atlagsuly_2_ch1",
+      "name": "suly_meres_akt_2_ch1",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 1: Average weight 2"
-    },
-    {
-      "name": "hibajel_ch1",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Chamber 1: Error flag"
-    },
-    {
-      "name": "befujt_szimulalt_ch1",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Chamber 1: Supply air simulation mode"
-    },
-    {
-      "name": "kamra_szimulalt_ch1",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Chamber 1: Chamber simulation mode"
-    },
-    {
-      "name": "ntc1_homerseklet_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: NTC sensor 1 temperature ×10"
-    },
-    {
-      "name": "ntc2_homerseklet_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: NTC sensor 2 temperature ×10"
-    },
-    {
-      "name": "ntc3_homerseklet_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: NTC sensor 3 temperature ×10"
-    },
-    {
-      "name": "ntc4_homerseklet_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: NTC sensor 4 temperature ×10"
-    },
-    {
-      "name": "dp_kamra_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: Chamber dew point ×10"
-    },
-    {
-      "name": "dp_befujt_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: Supply air dew point ×10"
-    },
-    {
-      "name": "dp_cel_ch1",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 1: Target dew point ×10"
+      "description": "Chamber 1: Weight sensor 2 current"
     },
     {
       "name": "kamra_homerseklet_ch2",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 2: Chamber temperature ×10"
+      "description": "Chamber 2: Chamber temperature \u00d710"
     },
     {
       "name": "kamra_para_ch2",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 2: Chamber humidity ×10"
+      "description": "Chamber 2: Chamber humidity \u00d710"
+    },
+    {
+      "name": "kamra_homerseklet_raw_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Raw chamber temperature"
+    },
+    {
+      "name": "kamra_para_raw_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Raw chamber humidity"
     },
     {
       "name": "kamra_cel_homerseklet_ch2",
       "type": "integer",
       "default_value": 150,
-      "description": "Chamber 2: Target chamber temp ×10 (15.0°C)"
+      "description": "Chamber 2: Target chamber temp \u00d710 (15.0\u00b0C)"
     },
     {
       "name": "kamra_cel_para_ch2",
       "type": "integer",
       "default_value": 750,
-      "description": "Chamber 2: Target chamber humidity ×10 (75.0%)"
+      "description": "Chamber 2: Target chamber humidity \u00d710 (75.0%)"
     },
     {
       "name": "befujt_cel_homerseklet_ch2",
@@ -264,46 +295,58 @@
       "description": "Chamber 2: Current supply air humidity"
     },
     {
+      "name": "befujt_homerseklet_raw_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Raw supply air temperature"
+    },
+    {
+      "name": "befujt_para_raw_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Raw supply air humidity"
+    },
+    {
       "name": "befujt_homerseklet_table_ch2",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 2: Supply air temp moving average buffer"
+      "description": "Chamber 2: Supply air temp buffer"
     },
     {
       "name": "befujt_para_table_ch2",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 2: Supply air humidity moving average buffer"
+      "description": "Chamber 2: Supply air humidity buffer"
     },
     {
       "name": "kamra_homerseklet_table_ch2",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 2: Chamber temp moving average buffer"
+      "description": "Chamber 2: Chamber temp buffer"
     },
     {
       "name": "kamra_para_table_ch2",
       "type": "string",
       "default_value": "[]",
-      "description": "Chamber 2: Chamber humidity moving average buffer"
+      "description": "Chamber 2: Chamber humidity buffer"
     },
     {
       "name": "befujt_hibaszam_ch2",
       "type": "integer",
-      "default_value": 3,
-      "description": "Chamber 2: Supply air sensor error count"
+      "default_value": 10,
+      "description": "Chamber 2: Supply sensor error count"
     },
     {
       "name": "kamra_hibaszam_ch2",
       "type": "integer",
-      "default_value": 3,
+      "default_value": 10,
       "description": "Chamber 2: Chamber sensor error count"
     },
     {
       "name": "constansok_ch2",
       "type": "string",
-      "default_value": "{\"deltahi_kamra_homerseklet\":10,\"deltalo_kamra_homerseklet\":10,\"deltahi_befujt_homerseklet\":20,\"deltalo_befujt_homerseklet\":15,\"deltahi_kamra_para\":15,\"deltalo_kamra_para\":10,\"ah_deadzone\":50,\"outdoor_mix_ratio\":30,\"outdoor_temp_threshold\":50,\"P\":20,\"humidifier_installed\":false,\"sleep_cycle_enabled\":false,\"sleep_on_minutes\":45,\"sleep_off_minutes\":15}",
-      "description": "Chamber 2: Control constants JSON"
+      "default_value": "{\"deltahi_kamra_homerseklet\":15,\"deltalo_kamra_homerseklet\":10,\"temp_hysteresis_kamra\":5,\"ah_deadzone_kamra\":80,\"ah_hysteresis_kamra\":30,\"deltahi_befujt_homerseklet\":10,\"deltalo_befujt_homerseklet\":10,\"temp_hysteresis_befujt\":3,\"ah_deadzone_befujt\":50,\"ah_hysteresis_befujt\":20,\"outdoor_mix_ratio\":30,\"outdoor_use_threshold\":50,\"proportional_gain\":10,\"min_supply_air_temp\":60,\"max_supply_air_temp\":400,\"min_temp_no_humidifier\":110,\"buffer_size\":5,\"spike_threshold\":50,\"max_error_count\":10,\"temp_change_threshold\":2,\"humidity_change_threshold\":5,\"humidifier_installed\":false,\"humidifier_start_delta\":50,\"sleep_cycle_enabled\":false,\"sleep_on_minutes\":45,\"sleep_off_minutes\":15,\"init_duration\":32}",
+      "description": "Chamber 2: Control constants JSON (v2.5)"
     },
     {
       "name": "signals_ch2",
@@ -314,14 +357,50 @@
     {
       "name": "cycle_variable_ch2",
       "type": "string",
-      "default_value": "{}",
-      "description": "Chamber 2: Sleep cycle state"
+      "default_value": "{\"aktiv\":true}",
+      "description": "Chamber 2: Cycle state"
+    },
+    {
+      "name": "ah_kamra_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Chamber absolute humidity \u00d71000 (mg/m\u00b3)"
+    },
+    {
+      "name": "ah_befujt_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Supply absolute humidity \u00d71000"
+    },
+    {
+      "name": "ah_cel_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Target absolute humidity \u00d71000"
+    },
+    {
+      "name": "dp_kamra_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Chamber dew point \u00d710"
+    },
+    {
+      "name": "dp_befujt_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Supply dew point \u00d710"
+    },
+    {
+      "name": "dp_cel_ch2",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Chamber 2: Target dew point \u00d710"
     },
     {
       "name": "ah_dp_table_ch2",
       "type": "string",
       "default_value": "{}",
-      "description": "Chamber 2: Absolute humidity & dew point"
+      "description": "Chamber 2: AH/DP calculation cache"
     },
     {
       "name": "suly_meres_table_1_ch2",
@@ -336,124 +415,70 @@
       "description": "Chamber 2: Weight sensor 2 buffer"
     },
     {
-      "name": "atlagsuly_1_ch2",
+      "name": "suly_meres_akt_1_ch2",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 2: Average weight 1"
+      "description": "Chamber 2: Weight sensor 1 current"
     },
     {
-      "name": "atlagsuly_2_ch2",
+      "name": "suly_meres_akt_2_ch2",
       "type": "integer",
       "default_value": 0,
-      "description": "Chamber 2: Average weight 2"
-    },
-    {
-      "name": "hibajel_ch2",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Chamber 2: Error flag"
-    },
-    {
-      "name": "befujt_szimulalt_ch2",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Chamber 2: Supply air simulation mode"
-    },
-    {
-      "name": "kamra_szimulalt_ch2",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Chamber 2: Chamber simulation mode"
-    },
-    {
-      "name": "ntc1_homerseklet_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: NTC sensor 1 temperature ×10"
-    },
-    {
-      "name": "ntc2_homerseklet_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: NTC sensor 2 temperature ×10"
-    },
-    {
-      "name": "ntc3_homerseklet_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: NTC sensor 3 temperature ×10"
-    },
-    {
-      "name": "ntc4_homerseklet_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: NTC sensor 4 temperature ×10"
-    },
-    {
-      "name": "dp_kamra_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: Chamber dew point ×10"
-    },
-    {
-      "name": "dp_befujt_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: Supply air dew point ×10"
-    },
-    {
-      "name": "dp_cel_ch2",
-      "type": "integer",
-      "default_value": 0,
-      "description": "Chamber 2: Target dew point ×10"
+      "description": "Chamber 2: Weight sensor 2 current"
     },
     {
       "name": "kulso_homerseklet_glbl",
       "type": "integer",
       "default_value": 0,
-      "description": "Global: Outdoor temperature ×10"
+      "description": "Global: Outdoor temperature \u00d710"
     },
     {
       "name": "kulso_para_glbl",
       "type": "integer",
       "default_value": 0,
-      "description": "Global: Outdoor humidity ×10"
+      "description": "Global: Outdoor humidity \u00d710"
+    },
+    {
+      "name": "kulso_homerseklet_raw_glbl",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Global: Raw outdoor temperature"
+    },
+    {
+      "name": "kulso_para_raw_glbl",
+      "type": "integer",
+      "default_value": 0,
+      "description": "Global: Raw outdoor humidity"
     },
     {
       "name": "kulso_homerseklet_table_glbl",
       "type": "string",
       "default_value": "[]",
-      "description": "Global: Outdoor temp moving average buffer"
+      "description": "Global: Outdoor temp buffer"
     },
     {
       "name": "kulso_para_table_glbl",
       "type": "string",
       "default_value": "[]",
-      "description": "Global: Outdoor humidity moving average buffer"
-    },
-    {
-      "name": "kulso_hibaszam_glbl",
-      "type": "integer",
-      "default_value": 3,
-      "description": "Global: Outdoor sensor error count"
-    },
-    {
-      "name": "kulso_szimulalt_glbl",
-      "type": "boolean",
-      "default_value": false,
-      "description": "Global: Outdoor simulation mode"
+      "description": "Global: Outdoor humidity buffer"
     },
     {
       "name": "kulso_ah_dp_glbl",
       "type": "string",
       "default_value": "{}",
-      "description": "Global: Outdoor absolute humidity & dew point"
+      "description": "Global: Outdoor AH and dew point"
+    },
+    {
+      "name": "kulso_hibaszam_glbl",
+      "type": "integer",
+      "default_value": 10,
+      "description": "Global: Outdoor sensor error count"
     },
     {
       "name": "variable_name_map_glbl",
       "type": "string",
       "default_value": "{}",
-      "description": "Global: Variable name to ID mapping (built by erlelo_store)"
+      "description": "Global: Variable name to ID mapping"
     }
   ]
 }

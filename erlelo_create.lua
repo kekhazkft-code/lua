@@ -1,5 +1,5 @@
 --[[
-    ERLELO VARIABLE CREATOR v2.4
+    ERLELO VARIABLE CREATOR v2.5
     
     Fetches variable config from GitHub and creates all variables.
     Run this ONCE on a new system to initialize all erlelo variables.
@@ -15,17 +15,18 @@ local NUM_CHAMBERS = 3  -- Set to 1, 2, or 3
     ============================================================
     UI SETUP - Add these elements in the device editor:
     ============================================================
-    1. Add Button element:
+    1. Add HTTP Client component:
+       - Name: http (must be exactly "http")
+    
+    2. Add Button element:
        - Name: btn_start
        - Text: "Start Install"
        - Icon: play
        - On Press: onStartPress
     
-    2. Add Text element:
+    3. Add Text element:
        - Name: status_text
        - Value: "Ready"
-    
-    3. Arrange in widget layout (column, centered)
     ============================================================
     
     WORKFLOW:
@@ -48,37 +49,51 @@ local CONFIG_FILES = {
 local API_BASE = 'http://192.168.0.122/api/v1'
 local TOKEN = 'YOUR_API_TOKEN_HERE'  -- Replace with your API token
 
+-- Module-level state (working code pattern)
 local http = nil
-local state = nil
+local state = { 
+    step = 'idle', 
+    config = nil, 
+    created = 0, 
+    total = 0,
+    config_url = GITHUB_BASE .. (CONFIG_FILES[NUM_CHAMBERS] or CONFIG_FILES[3])
+}
 
 function CustomDevice:onInit()
     local config_file = CONFIG_FILES[NUM_CHAMBERS] or CONFIG_FILES[3]
     
-    print('=== ERLELO VARIABLE INSTALLER v2.4 ===')
+    print('=== ERLELO VARIABLE INSTALLER v2.5 ===')
     print('Humidity-Primary Control System')
     print('Chamber count: ' .. NUM_CHAMBERS)
     print('Config file: ' .. config_file)
     print('')
     print('Press "Start Install" button to begin')
     
-    http = self:getComponent('http')
-    state = { 
-        step = 'idle', 
-        config = nil, 
-        created = 0, 
-        total = 0,
-        config_url = GITHUB_BASE .. config_file
-    }
+    http = CustomDevice.getComponent(CustomDevice, 'http')
     
-    local status = self:getElement('status_text')
-    if status then
-        status:setValue('value', NUM_CHAMBERS .. '-chamber ready', true)
+    if not http then
+        print('WARNING: HTTP component not found at init')
+        print('Add HTTP Client component named "http" in device editor')
+    end
+    
+    local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+    if statusEl then
+        statusEl:setValue('value', NUM_CHAMBERS .. '-chamber ready', true)
     end
 end
 
 function CustomDevice:onStartPress()
+    -- Try to get http again in case it wasn't ready at init
+    if not http then
+        http = CustomDevice.getComponent(CustomDevice, 'http')
+    end
+    
     if not http then 
         print('ERROR: HTTP component not available')
+        local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+        if statusEl then
+            statusEl:setValue('value', 'ERROR: No HTTP component', true)
+        end
         return 
     end
     
@@ -92,19 +107,20 @@ function CustomDevice:onStartPress()
     state.step = 'fetch'
     state.created = 0
     
-    local status = self:getElement('status_text')
-    if status then
-        status:setValue('value', 'Fetching config...', true)
+    local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+    if statusEl then
+        statusEl:setValue('value', 'Fetching config...', true)
     end
     
     http:GET(state.config_url):timeout(15):send()
 end
 
 function CustomDevice:onEvent(event)
-    if not http or not state then return end
+    if not http then return end
+    if not state then return end
     
     http:onMessage(function(status_code, payload, url)
-        local statusEl = self:getElement('status_text')
+        local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
         
         if state.step == 'fetch' then
             if status_code == 200 then
@@ -133,7 +149,7 @@ function CustomDevice:onEvent(event)
                 state.step = 'create'
                 print('')
                 print('[2] Creating variables...')
-                self:createAllVariables()
+                createAllVariables()
             else
                 print('ERROR: HTTP ' .. tostring(status_code) .. ' fetching config')
                 if statusEl then statusEl:setValue('value', 'ERROR: HTTP ' .. tostring(status_code), true) end
@@ -165,7 +181,8 @@ function CustomDevice:onEvent(event)
     end)
 end
 
-function CustomDevice:createAllVariables()
+-- Standalone function (not a method)
+function createAllVariables()
     local count = 0
     
     for i, var in ipairs(state.config.variables) do

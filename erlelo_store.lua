@@ -1,5 +1,5 @@
 --[[
-    ERLELO ID MAPPER
+    ERLELO ID MAPPER v2.5
     
     Reads all variables from API, creates name->ID mapping,
     stores it in variable_name_map for all erlelo devices to use.
@@ -9,41 +9,57 @@
     ============================================================
     UI SETUP - Add these elements in the device editor:
     ============================================================
-    1. Add Button element:
+    1. Add HTTP Client component:
+       - Name: http (must be exactly "http")
+    
+    2. Add Button element:
        - Name: btn_start
        - Text: "Build Mapping"
        - Icon: play
        - On Press: onStartPress
     
-    2. Add Text element:
+    3. Add Text element:
        - Name: status_text
        - Value: "Ready"
-    
-    3. Arrange in widget layout (column, centered)
     ============================================================
 ]]
 
 local API_BASE = 'http://192.168.0.122/api/v1'
 local TOKEN = 'YOUR_API_TOKEN_HERE'
 
+-- Module-level state (working code pattern)
 local http = nil
-local state = nil
+local state = { step = 'idle' }
 
 function CustomDevice:onInit()
     print('=== ERLELO ID MAPPER ===')
     print('Press "Build Mapping" button to begin')
-    http = self:getComponent('http')
-    state = { step = 'idle' }
     
-    local status = self:getElement('status_text')
-    if status then
-        status:setValue('value', 'Ready - Press Start', true)
+    http = CustomDevice.getComponent(CustomDevice, 'http')
+    
+    if not http then
+        print('WARNING: HTTP component not found at init')
+        print('Add HTTP Client component named "http" in device editor')
+    end
+    
+    local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+    if statusEl then
+        statusEl:setValue('value', 'Ready - Press Start', true)
     end
 end
 
 function CustomDevice:onStartPress()
+    -- Try to get http again in case it wasn't ready at init
+    if not http then
+        http = CustomDevice.getComponent(CustomDevice, 'http')
+    end
+    
     if not http then
         print('ERROR: HTTP component not available')
+        local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+        if statusEl then
+            statusEl:setValue('value', 'ERROR: No HTTP component', true)
+        end
         return
     end
     
@@ -55,26 +71,27 @@ function CustomDevice:onStartPress()
     print('[1] Fetching all variables from API...')
     state.step = 'fetch'
     
-    local status = self:getElement('status_text')
-    if status then
-        status:setValue('value', 'Fetching variables...', true)
+    local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
+    if statusEl then
+        statusEl:setValue('value', 'Fetching variables...', true)
     end
     
     http:GET(API_BASE..'/lua/variables'):header('Authorization',TOKEN):timeout(15):send()
 end
 
 function CustomDevice:onEvent(event)
-    if not http or not state then return end
+    if not http then return end
+    if not state then return end
     
     http:onMessage(function(status_code, payload, url)
-        local status = self:getElement('status_text')
+        local statusEl = CustomDevice.getElement(CustomDevice, 'status_text')
         
         if state.step ~= 'fetch' then return end
         
         if status_code ~= 200 then
             print('ERROR: HTTP ' .. tostring(status_code))
-            if status then
-                status:setValue('value', 'ERROR: ' .. tostring(status_code), true)
+            if statusEl then
+                statusEl:setValue('value', 'ERROR: ' .. tostring(status_code), true)
             end
             state.step = 'idle'
             return
@@ -100,8 +117,8 @@ function CustomDevice:onEvent(event)
         if not variable_name_map_id then
             print('ERROR: variable_name_map_glbl not found!')
             print('Make sure erlelo_create was run first.')
-            if status then
-                status:setValue('value', 'ERROR: var not found!', true)
+            if statusEl then
+                statusEl:setValue('value', 'ERROR: var not found!', true)
             end
             state.step = 'idle'
             return
@@ -129,11 +146,10 @@ function CustomDevice:onEvent(event)
         print('')
         print('Then enable the controller devices.')
         
-        if status then
-            status:setValue('value', 'DONE! ID=' .. variable_name_map_id, true)
+        if statusEl then
+            statusEl:setValue('value', 'DONE! ID=' .. variable_name_map_id, true)
         end
         
         state.step = 'idle'
     end)
 end
-
